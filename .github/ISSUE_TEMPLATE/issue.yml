@@ -1,0 +1,68 @@
+name: Report an issue
+description: Report a bug, request a feature, or suggest a documentation change
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve poly-crap.
+
+        Do not include tokens, credentials, personal data, or other secrets. Report security flaws through the repository's [private security advisory form](https://github.com/drew-simmons/poly-crap/security/advisories/new) instead.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Issue type
+      options:
+        - Bug
+        - Feature request
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Give a short, clear account of the issue or request.
+      placeholder: What should change?
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: For a bug, include the steps to reproduce it, what happened, and what you expected. For a request, explain the goal and why it matters.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: "poly-crap version"
+      description: Run `poly-crap --version` if the command is installed.
+      placeholder: "poly-crap 0.1.0"
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include your operating system, shell, and other useful versions.
+      placeholder: macOS 15, Zsh 5.9
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or other context
+      description: Add sanitized logs, screenshots, or links that may help.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched for an existing issue before opening this one.
+          required: true
+        - label: I removed tokens, credentials, personal data, and other secrets.
+          required: true

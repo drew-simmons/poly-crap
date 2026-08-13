@@ -1,0 +1,25 @@
+[package]
+name = "poly-crap"
+version = "0.0.0"
+publish = ["crates-io"]
+edition = "2024"
+rust-version = "1.88"
+description = "A fast, focused command-line tool written in Rust"
+authors = ["Drew Simmons \u003cdsimmo14@gmail.com\u003e"]
+license = "MIT"
+repository = "https://github.com/drew-simmons/poly-crap"
+homepage = "https://github.com/drew-simmons/poly-crap"
+readme = "README.md"
+keywords = ["cli"]
+categories = ["command-line-utilities"]
+
+[package.metadata.dist]
+dist = true
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+
+# The profile that dist uses for release artifacts.
+[profile.dist]
+inherits = "release"
+lto = "thin"
