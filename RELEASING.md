@@ -6,15 +6,16 @@ Linux archives, checksums, and shell installer for each release tag.
 
 ## One-time GitHub setup
 
-1. Create a fine-grained personal access token scoped only to
+1. Optional: to let Release Please pull requests start CI without manual
+   approval, create a fine-grained personal access token scoped only to
    `drew-simmons/poly-crap` with these repository permissions:
 
    - Contents: read and write
    - Issues: read and write
    - Pull requests: read and write
 
-2. Add it as the repository Actions secret `RELEASE_PLEASE_TOKEN` for the full
-   release flow. Until then, Release Please falls back to `GITHUB_TOKEN`.
+2. Add that token as the repository Actions secret `RELEASE_PLEASE_TOKEN`.
+   Release builds do not need this token.
 3. In **Settings → Actions → General**, enable **Allow GitHub Actions to create
    and approve pull requests**. The `GITHUB_TOKEN` fallback requires it.
 4. Create a crates.io API token and add it as the repository Actions secret
@@ -42,11 +43,10 @@ Linux archives, checksums, and shell installer for each release tag.
      - `plan`
 
 > [!IMPORTANT]
-> Use a dedicated token for Release Please. GitHub does not start new workflow
-> runs for events created with the default `GITHUB_TOKEN`. The dedicated token
-> lets CI run on Release PRs and lets a Release Please tag start cargo-dist.
-> The fallback can create or update the Release PR, but it cannot start those
-> later workflows.
+> GitHub does not start tag workflows for tags created with the default
+> `GITHUB_TOKEN`. After Release Please creates a tag, its workflow dispatches
+> the cargo-dist workflow with `GITHUB_TOKEN`, which GitHub does allow. A
+> dedicated token remains useful for CI on Release Please pull requests.
 
 ## Conventional Commits
 
@@ -67,9 +67,9 @@ keeps implementation-only commit types out of the public changelog.
    `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md` changes.
 3. Review its notes and merge the Release PR after CI passes.
 4. Release Please creates the version tag and a draft GitHub Release.
-5. The tag starts cargo-dist. After all targets build, cargo-dist attaches the
-   archives, checksums, and `poly-crap-installer.sh`. It then publishes
-   the draft release.
+5. Release Please starts cargo-dist for the tag. After all targets build,
+   cargo-dist attaches the archives, checksums, and `poly-crap-installer.sh`.
+   It then publishes the draft release.
 6. The release workflow publishes the same version to crates.io.
 
 The repository starts at version `0.0.0`. Use `feat: initial release` for the
@@ -79,6 +79,10 @@ first project commit so the first Release PR proposes `v0.1.0`.
 > Do not bump the package version, edit generated changelog entries, or create
 > release tags by hand. If cargo-dist fails, fix the cause and rerun the failed
 > workflow in GitHub Actions. The draft release stays unpublished.
+
+If Release Please created a tag but cargo-dist did not start, run the
+**Release** workflow from the Actions tab and enter the existing tag. This
+publishes the draft without moving or recreating the tag.
 
 > [!WARNING]
 > `.github/workflows/release.yml` has custom steps that upload to the draft from
