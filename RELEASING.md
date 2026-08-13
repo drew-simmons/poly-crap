@@ -15,8 +15,8 @@ Linux archives, checksums, and shell installer for each release tag.
 
 2. Add it as the repository Actions secret `RELEASE_PLEASE_TOKEN` for the full
    release flow. Until then, Release Please falls back to `GITHUB_TOKEN`.
-3. In **Settings → Actions → General**, allow GitHub Actions to create pull
-   requests if repository or organization policy otherwise blocks them.
+3. In **Settings → Actions → General**, enable **Allow GitHub Actions to create
+   and approve pull requests**. The `GITHUB_TOKEN` fallback requires it.
 4. Create a crates.io API token and add it as the repository Actions secret
    `CARGO_REGISTRY_TOKEN`.
 5. In **Settings → General → Pull Requests**:
