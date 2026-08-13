@@ -4,20 +4,42 @@ version = "0.0.0"
 publish = ["crates-io"]
 edition = "2024"
 rust-version = "1.88"
-description = "A fast, focused command-line tool written in Rust"
+description = "Find risky, untested complexity across polyglot codebases"
 authors = ["Drew Simmons \u003cdsimmo14@gmail.com\u003e"]
 license = "MIT"
 repository = "https://github.com/drew-simmons/poly-crap"
 homepage = "https://github.com/drew-simmons/poly-crap"
 readme = "README.md"
-keywords = ["cli"]
-categories = ["command-line-utilities"]
+keywords = ["coverage", "complexity", "code-quality", "metrics", "cli"]
+categories = ["command-line-utilities", "development-tools::testing"]
 
 [package.metadata.dist]
 dist = true
 
 [dependencies]
+anyhow = "1"
 clap = { version = "4.6.6", features = ["derive"] }
+globset = "0.4"
+ignore = "0.4"
+quick-xml = "0.38"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+tree-sitter = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-hcl = "1.1"
+tree-sitter-java = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"
+
+[dev-dependencies]
+assert_cmd = "2"
+jsonschema = { version = "0.33", default-features = false }
+predicates = "3"
+tempfile = "3"
 
 # The profile that dist uses for release artifacts.
 [profile.dist]

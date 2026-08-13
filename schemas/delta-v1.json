@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/drew-simmons/poly-crap/main/schemas/delta-v1.json",
+  "title": "poly-crap delta report v1",
+  "type": "object",
+  "required": ["$schema", "version", "entries", "removed", "diagnostics"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "type": "string" },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["language", "file", "symbol", "start_line", "end_line", "metric", "complexity", "coverage", "coverage_basis", "crap", "score", "baseline_score", "delta", "status"],
+        "properties": {
+          "language": { "enum": ["javascript", "typescript", "python", "go", "rust", "java", "terraform"] },
+          "file": { "type": "string" },
+          "symbol": { "type": "string" },
+          "start_line": { "type": "integer", "minimum": 1 },
+          "end_line": { "type": "integer", "minimum": 1 },
+          "metric": { "enum": ["crap", "complexity"] },
+          "complexity": { "type": "number", "minimum": 1 },
+          "coverage": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+          "coverage_basis": { "enum": ["line", "statement", null] },
+          "crap": { "type": ["number", "null"] },
+          "score": { "type": "number" },
+          "uncovered": { "type": "array" },
+          "baseline_score": { "type": ["number", "null"] },
+          "delta": { "type": ["number", "null"] },
+          "status": { "enum": ["new", "regressed", "improved", "unchanged", "moved"] },
+          "previous_file": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "removed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["language", "file", "symbol", "metric", "baseline_score"],
+        "properties": {
+          "language": { "type": "string" },
+          "file": { "type": "string" },
+          "symbol": { "type": "string" },
+          "metric": { "enum": ["crap", "complexity"] },
+          "baseline_score": { "type": "number" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "diagnostics": { "type": "object" }
+  },
+  "additionalProperties": false
+}
