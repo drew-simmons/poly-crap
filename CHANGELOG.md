@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/drew-simmons/poly-crap/compare/v0.1.0...v0.1.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* release workflow ([de071cb](https://github.com/drew-simmons/poly-crap/commit/de071cb9be8636280ed5b11bb250a9d5ccff5a67))
+
 ## 0.1.0 (2026-08-13)
 
 
