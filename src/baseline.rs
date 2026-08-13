@@ -66,6 +66,22 @@ pub fn compare(
     epsilon: f64,
     diagnostics: ScopeDiagnostics,
 ) -> DeltaReport {
+    let (mut entries, mut matched) = match_exact(current, baseline, epsilon);
+    match_suffixes(&mut entries, baseline, epsilon, &mut matched);
+    match_moves(&mut entries, baseline, epsilon, &mut matched);
+    let removed = removed_entries(baseline, &matched);
+    DeltaReport {
+        entries,
+        removed,
+        diagnostics,
+    }
+}
+
+fn match_exact(
+    current: Vec<Entry>,
+    baseline: &[Entry],
+    epsilon: f64,
+) -> (Vec<DeltaEntry>, HashSet<usize>) {
     let exact: HashMap<_, _> = baseline
         .iter()
         .enumerate()
@@ -73,7 +89,6 @@ pub fn compare(
         .collect();
     let mut matched = HashSet::new();
     let mut entries = Vec::with_capacity(current.len());
-
     for entry in current {
         if let Some(index) = exact.get(&exact_key(&entry)).copied() {
             matched.insert(index);
@@ -88,8 +103,15 @@ pub fn compare(
             entries.push(delta_entry(entry, None, epsilon, None, false));
         }
     }
+    (entries, matched)
+}
 
-    // Match a baseline recorded under a different checkout root.
+fn match_suffixes(
+    entries: &mut [DeltaEntry],
+    baseline: &[Entry],
+    epsilon: f64,
+    matched: &mut HashSet<usize>,
+) {
     for delta in entries
         .iter_mut()
         .filter(|entry| entry.status == DeltaStatus::New)
@@ -128,29 +150,22 @@ pub fn compare(
             *delta = delta_entry(delta.current.clone(), Some(candidate), epsilon, None, false);
         }
     }
+}
 
-    // A unique language + symbol pair can move to a new file or line.
-    let mut current_counts = HashMap::new();
-    for delta in entries
-        .iter()
-        .filter(|entry| entry.status == DeltaStatus::New)
-    {
-        *current_counts
-            .entry(symbol_key(&delta.current))
-            .or_insert(0usize) += 1;
-    }
-    let mut baseline_counts = HashMap::new();
-    for (index, entry) in baseline.iter().enumerate() {
-        if !matched.contains(&index) {
-            *baseline_counts.entry(symbol_key(entry)).or_insert(0usize) += 1;
-        }
-    }
+fn match_moves(
+    entries: &mut [DeltaEntry],
+    baseline: &[Entry],
+    epsilon: f64,
+    matched: &mut HashSet<usize>,
+) {
+    let current_counts = current_symbol_counts(entries);
+    let baseline_counts = baseline_symbol_counts(baseline, matched);
     for delta in entries
         .iter_mut()
         .filter(|entry| entry.status == DeltaStatus::New)
     {
         let key = symbol_key(&delta.current);
-        if current_counts.get(&key) != Some(&1) || baseline_counts.get(&key) != Some(&1) {
+        if !is_unique_move(&key, &current_counts, &baseline_counts) {
             continue;
         }
         if let Some((index, candidate)) = baseline
@@ -169,8 +184,42 @@ pub fn compare(
             );
         }
     }
+}
 
-    let removed = baseline
+fn is_unique_move(
+    key: &(Language, MetricKind, String),
+    current: &HashMap<(Language, MetricKind, String), usize>,
+    baseline: &HashMap<(Language, MetricKind, String), usize>,
+) -> bool {
+    current.get(key) == Some(&1) && baseline.get(key) == Some(&1)
+}
+
+fn current_symbol_counts(entries: &[DeltaEntry]) -> HashMap<(Language, MetricKind, String), usize> {
+    let mut counts = HashMap::new();
+    for delta in entries
+        .iter()
+        .filter(|entry| entry.status == DeltaStatus::New)
+    {
+        *counts.entry(symbol_key(&delta.current)).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn baseline_symbol_counts(
+    baseline: &[Entry],
+    matched: &HashSet<usize>,
+) -> HashMap<(Language, MetricKind, String), usize> {
+    let mut counts = HashMap::new();
+    for (index, entry) in baseline.iter().enumerate() {
+        if !matched.contains(&index) {
+            *counts.entry(symbol_key(entry)).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+fn removed_entries(baseline: &[Entry], matched: &HashSet<usize>) -> Vec<RemovedEntry> {
+    baseline
         .iter()
         .enumerate()
         .filter(|(index, _)| !matched.contains(index))
@@ -181,12 +230,7 @@ pub fn compare(
             metric: entry.metric,
             baseline_score: entry.score,
         })
-        .collect();
-    DeltaReport {
-        entries,
-        removed,
-        diagnostics,
-    }
+        .collect()
 }
 
 fn delta_entry(

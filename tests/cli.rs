@@ -43,6 +43,8 @@ fn mixed_language_json_matches_schema() {
             dir.path().to_str().unwrap(),
             "--coverage",
             coverage.to_str().unwrap(),
+            "--jobs",
+            "1",
             "--format",
             "json",
         ])

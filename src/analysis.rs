@@ -25,6 +25,26 @@ struct UnitSpec<'tree> {
 }
 
 pub fn analyze_tree(root: &Path, languages: &[Language], excludes: &[String]) -> Result<Analysis> {
+    validate_root(root)?;
+    let exclude_set = build_globs(excludes)?;
+    let enabled: HashSet<_> = languages.iter().copied().collect();
+    let paths = discover_paths(root, &enabled, &exclude_set);
+    let results: Vec<_> = paths
+        .par_iter()
+        .map(|(path, language)| analyze_file(path, *language))
+        .collect();
+    let mut analysis = Analysis {
+        candidate_files: paths.len(),
+        ..Analysis::default()
+    };
+    for result in results {
+        add_file_result(&mut analysis, result);
+    }
+    sort_analysis(&mut analysis);
+    Ok(analysis)
+}
+
+fn validate_root(root: &Path) -> Result<()> {
     if !root.exists() {
         return Err(anyhow!("analysis path does not exist: {}", root.display()));
     }
@@ -34,10 +54,15 @@ pub fn analyze_tree(root: &Path, languages: &[Language], excludes: &[String]) ->
             root.display()
         ));
     }
+    Ok(())
+}
 
-    let exclude_set = build_globs(excludes)?;
-    let enabled: HashSet<_> = languages.iter().copied().collect();
-    let paths: Vec<_> = ignore::WalkBuilder::new(root)
+fn discover_paths(
+    root: &Path,
+    enabled: &HashSet<Language>,
+    exclude_set: &GlobSet,
+) -> Vec<(std::path::PathBuf, Language)> {
+    ignore::WalkBuilder::new(root)
         .standard_filters(true)
         .build()
         .filter_map(Result::ok)
@@ -51,34 +76,30 @@ pub fn analyze_tree(root: &Path, languages: &[Language], excludes: &[String]) ->
             let relative = path.strip_prefix(root).unwrap_or(&path);
             (!exclude_set.is_match(relative)).then_some((path, language))
         })
-        .collect();
+        .collect()
+}
 
-    let results: Vec<_> = paths
-        .par_iter()
-        .map(|(path, language)| analyze_file(path, *language))
-        .collect();
-
-    let mut analysis = Analysis {
-        candidate_files: paths.len(),
-        ..Analysis::default()
-    };
-    for result in results {
-        match result {
-            Ok(file) => {
-                if let Some(diagnostic) = file.diagnostic {
-                    analysis.diagnostics.push(diagnostic);
-                } else {
-                    analysis.parsed_files += 1;
-                    analysis.units.extend(file.units);
-                }
-            }
-            Err(error) => analysis.diagnostics.push(Diagnostic {
-                kind: "parse".into(),
-                message: error.to_string(),
-                file: None,
-            }),
-        }
+fn add_file_result(analysis: &mut Analysis, result: Result<FileAnalysis>) {
+    match result {
+        Ok(file) => add_file_analysis(analysis, file),
+        Err(error) => analysis.diagnostics.push(Diagnostic {
+            kind: "parse".into(),
+            message: error.to_string(),
+            file: None,
+        }),
     }
+}
+
+fn add_file_analysis(analysis: &mut Analysis, file: FileAnalysis) {
+    if let Some(diagnostic) = file.diagnostic {
+        analysis.diagnostics.push(diagnostic);
+        return;
+    }
+    analysis.parsed_files += 1;
+    analysis.units.extend(file.units);
+}
+
+fn sort_analysis(analysis: &mut Analysis) {
     analysis.units.sort_by(|a, b| {
         a.file
             .cmp(&b.file)
@@ -88,7 +109,6 @@ pub fn analyze_tree(root: &Path, languages: &[Language], excludes: &[String]) ->
     analysis
         .diagnostics
         .sort_by(|a, b| a.file.cmp(&b.file).then(a.message.cmp(&b.message)));
-    Ok(analysis)
 }
 
 fn build_globs(patterns: &[String]) -> Result<GlobSet> {
@@ -104,19 +124,52 @@ fn build_globs(patterns: &[String]) -> Result<GlobSet> {
     builder.build().context("building exclude patterns")
 }
 
+type GrammarLoader = fn(&Path) -> tree_sitter::Language;
+
+const GRAMMAR_LOADERS: [GrammarLoader; 7] = [
+    javascript_grammar,
+    typescript_grammar,
+    python_grammar,
+    go_grammar,
+    rust_grammar,
+    java_grammar,
+    terraform_grammar,
+];
+
 fn grammar(language: Language, path: &Path) -> tree_sitter::Language {
-    match language {
-        Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
-        Language::TypeScript if path.extension().is_some_and(|ext| ext == "tsx") => {
-            tree_sitter_typescript::LANGUAGE_TSX.into()
-        }
-        Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        Language::Python => tree_sitter_python::LANGUAGE.into(),
-        Language::Go => tree_sitter_go::LANGUAGE.into(),
-        Language::Rust => tree_sitter_rust::LANGUAGE.into(),
-        Language::Java => tree_sitter_java::LANGUAGE.into(),
-        Language::Terraform => tree_sitter_hcl::LANGUAGE.into(),
+    GRAMMAR_LOADERS[language.index()](path)
+}
+
+fn javascript_grammar(_: &Path) -> tree_sitter::Language {
+    tree_sitter_javascript::LANGUAGE.into()
+}
+
+fn typescript_grammar(path: &Path) -> tree_sitter::Language {
+    if path.extension().is_some_and(|extension| extension == "tsx") {
+        tree_sitter_typescript::LANGUAGE_TSX.into()
+    } else {
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
     }
+}
+
+fn python_grammar(_: &Path) -> tree_sitter::Language {
+    tree_sitter_python::LANGUAGE.into()
+}
+
+fn go_grammar(_: &Path) -> tree_sitter::Language {
+    tree_sitter_go::LANGUAGE.into()
+}
+
+fn rust_grammar(_: &Path) -> tree_sitter::Language {
+    tree_sitter_rust::LANGUAGE.into()
+}
+
+fn java_grammar(_: &Path) -> tree_sitter::Language {
+    tree_sitter_java::LANGUAGE.into()
+}
+
+fn terraform_grammar(_: &Path) -> tree_sitter::Language {
+    tree_sitter_hcl::LANGUAGE.into()
 }
 
 fn analyze_file(path: &Path, language: Language) -> Result<FileAnalysis> {
@@ -170,16 +223,9 @@ fn collect_units<'tree>(
     output: &mut Vec<UnitSpec<'tree>>,
 ) {
     if language == Language::Terraform {
-        if node.kind() == "block" && !has_ancestor_kind(node, "block") {
-            if let Some(name) = terraform_block_name(node, source) {
-                output.push(UnitSpec { node, name });
-            }
-        }
-    } else if let Some((unit_node, name)) = named_unit(node, language, source) {
-        output.push(UnitSpec {
-            node: unit_node,
-            name,
-        });
+        collect_terraform_unit(node, source, output);
+    } else {
+        collect_code_unit(node, language, source, output);
     }
 
     let mut cursor = node.walk();
@@ -188,94 +234,202 @@ fn collect_units<'tree>(
     }
 }
 
+fn collect_terraform_unit<'tree>(
+    node: Node<'tree>,
+    source: &[u8],
+    output: &mut Vec<UnitSpec<'tree>>,
+) {
+    if node.kind() != "block" || has_ancestor_kind(node, "block") {
+        return;
+    }
+    if let Some(name) = terraform_block_name(node, source) {
+        output.push(UnitSpec { node, name });
+    }
+}
+
+fn collect_code_unit<'tree>(
+    node: Node<'tree>,
+    language: Language,
+    source: &[u8],
+    output: &mut Vec<UnitSpec<'tree>>,
+) {
+    if let Some((unit_node, name)) = named_unit(node, language, source) {
+        output.push(UnitSpec {
+            node: unit_node,
+            name,
+        });
+    }
+}
+
+const DECLARATION_KINDS: [&[&str]; 7] = [
+    &[
+        "function_declaration",
+        "generator_function_declaration",
+        "method_definition",
+    ],
+    &[
+        "function_declaration",
+        "generator_function_declaration",
+        "method_definition",
+    ],
+    &["function_definition"],
+    &["function_declaration", "method_declaration"],
+    &["function_item"],
+    &["method_declaration", "constructor_declaration"],
+    &[],
+];
+
 fn named_unit<'tree>(
     node: Node<'tree>,
     language: Language,
     source: &[u8],
 ) -> Option<(Node<'tree>, String)> {
-    let declaration = match language {
-        Language::JavaScript | Language::TypeScript => matches!(
-            node.kind(),
-            "function_declaration" | "generator_function_declaration" | "method_definition"
-        ),
-        Language::Python => node.kind() == "function_definition",
-        Language::Go => matches!(node.kind(), "function_declaration" | "method_declaration"),
-        Language::Rust => node.kind() == "function_item",
-        Language::Java => matches!(
-            node.kind(),
-            "method_declaration" | "constructor_declaration"
-        ),
-        Language::Terraform => false,
-    };
-    if declaration {
-        if language == Language::Java && node.child_by_field_name("body").is_none() {
-            return None;
-        }
-        let name = node
-            .child_by_field_name("name")
-            .and_then(|name| text(name, source))?
-            .to_string();
-        return Some((node, java_signature(node, language, name, source)));
+    if DECLARATION_KINDS[language.index()].contains(&node.kind()) {
+        return declared_unit(node, language, source);
     }
-
-    if let Some((value, name)) = assigned_callable(node, language, source) {
-        return Some((value, name));
-    }
-    None
+    assigned_callable(node, language, source)
 }
+
+fn declared_unit<'tree>(
+    node: Node<'tree>,
+    language: Language,
+    source: &[u8],
+) -> Option<(Node<'tree>, String)> {
+    if is_bodyless_java_declaration(node, language) {
+        return None;
+    }
+    let name = declared_name(node, source)?;
+    Some((node, java_signature(node, language, name, source)))
+}
+
+fn is_bodyless_java_declaration(node: Node<'_>, language: Language) -> bool {
+    language == Language::Java && node.child_by_field_name("body").is_none()
+}
+
+fn declared_name(node: Node<'_>, source: &[u8]) -> Option<String> {
+    node.child_by_field_name("name")
+        .and_then(|name| text(name, source))
+        .map(str::to_string)
+}
+
+struct AssignmentSpec {
+    language: Language,
+    node_kind: &'static str,
+    name_field: &'static str,
+    value_field: &'static str,
+    callable_kinds: &'static [&'static str],
+}
+
+const JS_CALLABLES: &[&str] = &[
+    "arrow_function",
+    "function_expression",
+    "generator_function",
+];
+const ASSIGNMENT_SPECS: &[AssignmentSpec] = &[
+    AssignmentSpec {
+        language: Language::JavaScript,
+        node_kind: "variable_declarator",
+        name_field: "name",
+        value_field: "value",
+        callable_kinds: JS_CALLABLES,
+    },
+    AssignmentSpec {
+        language: Language::JavaScript,
+        node_kind: "public_field_definition",
+        name_field: "name",
+        value_field: "value",
+        callable_kinds: JS_CALLABLES,
+    },
+    AssignmentSpec {
+        language: Language::JavaScript,
+        node_kind: "pair",
+        name_field: "key",
+        value_field: "value",
+        callable_kinds: JS_CALLABLES,
+    },
+    AssignmentSpec {
+        language: Language::JavaScript,
+        node_kind: "assignment_expression",
+        name_field: "left",
+        value_field: "right",
+        callable_kinds: JS_CALLABLES,
+    },
+    AssignmentSpec {
+        language: Language::TypeScript,
+        node_kind: "variable_declarator",
+        name_field: "name",
+        value_field: "value",
+        callable_kinds: JS_CALLABLES,
+    },
+    AssignmentSpec {
+        language: Language::TypeScript,
+        node_kind: "public_field_definition",
+        name_field: "name",
+        value_field: "value",
+        callable_kinds: JS_CALLABLES,
+    },
+    AssignmentSpec {
+        language: Language::TypeScript,
+        node_kind: "pair",
+        name_field: "key",
+        value_field: "value",
+        callable_kinds: JS_CALLABLES,
+    },
+    AssignmentSpec {
+        language: Language::TypeScript,
+        node_kind: "assignment_expression",
+        name_field: "left",
+        value_field: "right",
+        callable_kinds: JS_CALLABLES,
+    },
+    AssignmentSpec {
+        language: Language::Python,
+        node_kind: "assignment",
+        name_field: "left",
+        value_field: "right",
+        callable_kinds: &["lambda"],
+    },
+    AssignmentSpec {
+        language: Language::Go,
+        node_kind: "short_var_declaration",
+        name_field: "left",
+        value_field: "right",
+        callable_kinds: &["func_literal"],
+    },
+    AssignmentSpec {
+        language: Language::Go,
+        node_kind: "var_spec",
+        name_field: "name",
+        value_field: "value",
+        callable_kinds: &["func_literal"],
+    },
+    AssignmentSpec {
+        language: Language::Rust,
+        node_kind: "let_declaration",
+        name_field: "pattern",
+        value_field: "value",
+        callable_kinds: &["closure_expression"],
+    },
+    AssignmentSpec {
+        language: Language::Java,
+        node_kind: "variable_declarator",
+        name_field: "name",
+        value_field: "value",
+        callable_kinds: &["lambda_expression"],
+    },
+];
 
 fn assigned_callable<'tree>(
     node: Node<'tree>,
     language: Language,
     source: &[u8],
 ) -> Option<(Node<'tree>, String)> {
-    let (name_field, value_field, callable_kinds): (&str, &str, &[&str]) = match language {
-        Language::JavaScript | Language::TypeScript => match node.kind() {
-            "variable_declarator" | "public_field_definition" => (
-                "name",
-                "value",
-                &[
-                    "arrow_function",
-                    "function_expression",
-                    "generator_function",
-                ],
-            ),
-            "pair" => (
-                "key",
-                "value",
-                &[
-                    "arrow_function",
-                    "function_expression",
-                    "generator_function",
-                ],
-            ),
-            "assignment_expression" => (
-                "left",
-                "right",
-                &[
-                    "arrow_function",
-                    "function_expression",
-                    "generator_function",
-                ],
-            ),
-            _ => return None,
-        },
-        Language::Python if node.kind() == "assignment" => ("left", "right", &["lambda"]),
-        Language::Go if node.kind() == "short_var_declaration" => {
-            ("left", "right", &["func_literal"])
-        }
-        Language::Go if node.kind() == "var_spec" => ("name", "value", &["func_literal"]),
-        Language::Rust if node.kind() == "let_declaration" => {
-            ("pattern", "value", &["closure_expression"])
-        }
-        Language::Java if node.kind() == "variable_declarator" => {
-            ("name", "value", &["lambda_expression"])
-        }
-        _ => return None,
-    };
-    let name_node = unwrap_singleton(node.child_by_field_name(name_field)?);
-    let value = unwrap_singleton(node.child_by_field_name(value_field)?);
-    callable_kinds.contains(&value.kind()).then(|| {
+    let spec = ASSIGNMENT_SPECS
+        .iter()
+        .find(|spec| spec.language == language && spec.node_kind == node.kind())?;
+    let name_node = unwrap_singleton(node.child_by_field_name(spec.name_field)?);
+    let value = unwrap_singleton(node.child_by_field_name(spec.value_field)?);
+    spec.callable_kinds.contains(&value.kind()).then(|| {
         (
             value,
             normalize(text(name_node, source).unwrap_or("anonymous")),
@@ -309,27 +463,21 @@ fn java_signature(node: Node<'_>, language: Language, name: String, source: &[u8
 }
 
 fn qualify_symbol(node: Node<'_>, language: Language, name: &str, source: &[u8]) -> String {
+    let mut parts = container_parts(node, language, source);
+    if let Some(receiver) = go_receiver_name(node, language, source) {
+        parts.push(receiver);
+    }
+    parts.push(name.to_string());
+    parts.join(SYMBOL_SEPARATORS[language.index()])
+}
+
+const SYMBOL_SEPARATORS: [&str; 7] = [".", ".", ".", ".", "::", ".", "."];
+
+fn container_parts(node: Node<'_>, language: Language, source: &[u8]) -> Vec<String> {
     let mut parts = Vec::new();
     let mut parent = node.parent();
     while let Some(ancestor) = parent {
-        let kind = ancestor.kind();
-        let is_container = matches!(
-            kind,
-            "class_declaration"
-                | "class_definition"
-                | "interface_declaration"
-                | "enum_declaration"
-                | "record_declaration"
-                | "trait_item"
-                | "impl_item"
-                | "function_declaration"
-                | "function_definition"
-                | "function_item"
-                | "method_definition"
-                | "method_declaration"
-                | "constructor_declaration"
-        );
-        if is_container {
+        if is_container(ancestor.kind()) {
             if let Some(value) = container_name(ancestor, language, source) {
                 parts.push(value);
             }
@@ -337,44 +485,68 @@ fn qualify_symbol(node: Node<'_>, language: Language, name: &str, source: &[u8])
         parent = ancestor.parent();
     }
     parts.reverse();
+    parts
+}
 
-    if language == Language::Go && node.kind() == "method_declaration" {
-        if let Some(receiver) = node.child_by_field_name("receiver") {
-            let parameter = receiver.named_child(0).unwrap_or(receiver);
-            if let Some(receiver_type) = parameter.child_by_field_name("type") {
-                parts.push(normalize(text(receiver_type, source).unwrap_or_default()));
-            }
-        }
+fn is_container(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class_declaration"
+            | "class_definition"
+            | "interface_declaration"
+            | "enum_declaration"
+            | "record_declaration"
+            | "trait_item"
+            | "impl_item"
+            | "function_declaration"
+            | "function_definition"
+            | "function_item"
+            | "method_definition"
+            | "method_declaration"
+            | "constructor_declaration"
+    )
+}
+
+fn go_receiver_name(node: Node<'_>, language: Language, source: &[u8]) -> Option<String> {
+    if language != Language::Go {
+        return None;
     }
-    parts.push(name.to_string());
-    let separator = if language == Language::Rust {
-        "::"
-    } else {
-        "."
-    };
-    parts.join(separator)
+    if node.kind() != "method_declaration" {
+        return None;
+    }
+    let receiver = node.child_by_field_name("receiver")?;
+    let parameter = receiver.named_child(0).unwrap_or(receiver);
+    let receiver_type = parameter.child_by_field_name("type")?;
+    Some(normalize(text(receiver_type, source).unwrap_or_default()))
 }
 
 fn container_name(node: Node<'_>, language: Language, source: &[u8]) -> Option<String> {
     if node.kind() == "impl_item" {
-        let header = text(node, source)?.split('{').next()?.trim();
-        return header
-            .strip_prefix("impl")
-            .map(str::trim)
-            .and_then(|value| value.split_whitespace().last())
-            .map(str::to_string);
+        return impl_name(node, source);
     }
     let name = node.child_by_field_name("name")?;
     let value = text(name, source)?.to_string();
-    if language == Language::Java
+    if is_java_callable(node, language) {
+        return Some(java_signature(node, language, value, source));
+    }
+    (!value.is_empty()).then_some(value)
+}
+
+fn impl_name(node: Node<'_>, source: &[u8]) -> Option<String> {
+    let header = text(node, source)?.split('{').next()?.trim();
+    header
+        .strip_prefix("impl")
+        .map(str::trim)
+        .and_then(|value| value.split_whitespace().last())
+        .map(str::to_string)
+}
+
+fn is_java_callable(node: Node<'_>, language: Language) -> bool {
+    language == Language::Java
         && matches!(
             node.kind(),
             "method_declaration" | "constructor_declaration"
         )
-    {
-        return Some(java_signature(node, language, value, source));
-    }
-    (language != Language::Java || !value.is_empty()).then_some(value)
 }
 
 fn complexity(root: Node<'_>, language: Language, source: &[u8]) -> usize {
@@ -423,27 +595,20 @@ fn is_callable(kind: &str) -> bool {
 }
 
 fn is_decision(node: Node<'_>, language: Language, source: &[u8]) -> bool {
-    let kind = node.kind();
     if language == Language::Terraform {
-        let body = text(node, source).unwrap_or_default();
-        return matches!(kind, "conditional" | "for_expr" | "for_cond")
-            || (kind == "binary_operation" && has_boolean_operator(node, source))
-            || (kind == "attribute"
-                && first_named_text(node, source)
-                    .is_some_and(|name| matches!(name, "count" | "for_each")))
-            || (kind == "block"
-                && [
-                    "dynamic",
-                    "validation",
-                    "precondition",
-                    "postcondition",
-                    "assert",
-                ]
-                .iter()
-                .any(|prefix| body.trim_start().starts_with(prefix)));
+        return is_terraform_decision(node, source);
     }
+    if is_simple_decision(node.kind()) {
+        return true;
+    }
+    if is_arm_decision(node.kind()) {
+        return is_non_default_arm(node, source);
+    }
+    is_boolean_decision(node, source)
+}
 
-    let common = matches!(
+fn is_simple_decision(kind: &str) -> bool {
+    matches!(
         kind,
         "if_statement"
             | "elif_clause"
@@ -462,31 +627,68 @@ fn is_decision(node: Node<'_>, language: Language, source: &[u8]) -> bool {
             | "conditional_expression"
             | "for_in_clause"
             | "if_clause"
-            | "switch_case"
+    )
+}
+
+fn is_arm_decision(kind: &str) -> bool {
+    matches!(
+        kind,
+        "switch_case"
             | "expression_case"
             | "type_case"
             | "communication_case"
             | "case_clause"
             | "match_arm"
             | "switch_rule"
-    );
-    if common {
-        if matches!(
-            kind,
-            "switch_case"
-                | "expression_case"
-                | "type_case"
-                | "communication_case"
-                | "case_clause"
-                | "match_arm"
-                | "switch_rule"
-        ) {
-            let value = text(node, source).unwrap_or_default().trim_start();
-            return !value.starts_with("default") && !value.starts_with("_ =>");
-        }
-        return true;
+    )
+}
+
+fn is_non_default_arm(node: Node<'_>, source: &[u8]) -> bool {
+    let value = text(node, source).unwrap_or_default().trim_start();
+    !value.starts_with("default") && !value.starts_with("_ =>")
+}
+
+fn is_boolean_decision(node: Node<'_>, source: &[u8]) -> bool {
+    matches!(node.kind(), "binary_expression" | "boolean_operator")
+        && has_boolean_operator(node, source)
+}
+
+fn is_terraform_decision(node: Node<'_>, source: &[u8]) -> bool {
+    terraform_expression(node)
+        || terraform_boolean(node, source)
+        || terraform_attribute(node, source)
+        || terraform_block(node, source)
+}
+
+fn terraform_expression(node: Node<'_>) -> bool {
+    matches!(node.kind(), "conditional" | "for_expr" | "for_cond")
+}
+
+fn terraform_boolean(node: Node<'_>, source: &[u8]) -> bool {
+    node.kind() == "binary_operation" && has_boolean_operator(node, source)
+}
+
+fn terraform_attribute(node: Node<'_>, source: &[u8]) -> bool {
+    if node.kind() != "attribute" {
+        return false;
     }
-    matches!(kind, "binary_expression" | "boolean_operator") && has_boolean_operator(node, source)
+    first_named_text(node, source).is_some_and(|name| matches!(name, "count" | "for_each"))
+}
+
+fn terraform_block(node: Node<'_>, source: &[u8]) -> bool {
+    if node.kind() != "block" {
+        return false;
+    }
+    let body = text(node, source).unwrap_or_default();
+    [
+        "dynamic",
+        "validation",
+        "precondition",
+        "postcondition",
+        "assert",
+    ]
+    .iter()
+    .any(|prefix| body.trim_start().starts_with(prefix))
 }
 
 fn has_boolean_operator(node: Node<'_>, source: &[u8]) -> bool {
@@ -639,6 +841,15 @@ mod tests {
         );
         assert_eq!(units[0].symbol, "Thing::run");
         assert_eq!(units[0].complexity, 3.0);
+    }
+
+    #[test]
+    fn rust_match_ignores_default_arm() {
+        let units = analyze(
+            "rs",
+            "fn choose(x: u8) -> u8 { match x { 0 => 1, _ => 2 } }",
+        );
+        assert_eq!(units[0].complexity, 2.0);
     }
 
     #[test]

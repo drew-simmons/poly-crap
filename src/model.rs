@@ -4,6 +4,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+#[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
@@ -31,35 +32,72 @@ impl Language {
         Self::Terraform,
     ];
 
+    const NAMES: [&'static str; 7] = [
+        "javascript",
+        "typescript",
+        "python",
+        "go",
+        "rust",
+        "java",
+        "terraform",
+    ];
+
+    const ALIASES: [(&'static str, Self); 12] = [
+        ("javascript", Self::JavaScript),
+        ("js", Self::JavaScript),
+        ("typescript", Self::TypeScript),
+        ("ts", Self::TypeScript),
+        ("python", Self::Python),
+        ("py", Self::Python),
+        ("go", Self::Go),
+        ("rust", Self::Rust),
+        ("rs", Self::Rust),
+        ("java", Self::Java),
+        ("terraform", Self::Terraform),
+        ("tf", Self::Terraform),
+    ];
+
+    const EXTENSIONS: [(&'static [&'static str], Self); 7] = [
+        (&["js", "jsx", "mjs", "cjs"], Self::JavaScript),
+        (&["ts", "tsx", "mts", "cts"], Self::TypeScript),
+        (&["py"], Self::Python),
+        (&["go"], Self::Go),
+        (&["rs"], Self::Rust),
+        (&["java"], Self::Java),
+        (&["tf"], Self::Terraform),
+    ];
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        Self::NAMES[self.index()]
+    }
+
     #[must_use]
     pub fn from_path(path: &std::path::Path) -> Option<Self> {
-        let name = path.file_name()?.to_str()?;
-        let extension = path.extension()?.to_str()?;
-        match extension {
-            "js" | "jsx" | "mjs" | "cjs" => Some(Self::JavaScript),
-            "ts" | "tsx" | "mts" | "cts" => Some(Self::TypeScript),
-            "py" => Some(Self::Python),
-            "go" => Some(Self::Go),
-            "rs" => Some(Self::Rust),
-            "java" => Some(Self::Java),
-            "tf" if !name.ends_with(".tftest.hcl") => Some(Self::Terraform),
-            _ => None,
+        if is_terraform_test(path) {
+            return None;
         }
+        let extension = path.extension().and_then(std::ffi::OsStr::to_str)?;
+        Self::EXTENSIONS
+            .iter()
+            .find_map(|(extensions, language)| extensions.contains(&extension).then_some(*language))
     }
+}
+
+fn is_terraform_test(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|name| name.ends_with(".tftest.hcl"))
 }
 
 impl fmt::Display for Language {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = match self {
-            Self::JavaScript => "javascript",
-            Self::TypeScript => "typescript",
-            Self::Python => "python",
-            Self::Go => "go",
-            Self::Rust => "rust",
-            Self::Java => "java",
-            Self::Terraform => "terraform",
-        };
-        f.write_str(value)
+        f.write_str(self.as_str())
     }
 }
 
@@ -67,16 +105,11 @@ impl FromStr for Language {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.to_ascii_lowercase().as_str() {
-            "javascript" | "js" => Ok(Self::JavaScript),
-            "typescript" | "ts" => Ok(Self::TypeScript),
-            "python" | "py" => Ok(Self::Python),
-            "go" => Ok(Self::Go),
-            "rust" | "rs" => Ok(Self::Rust),
-            "java" => Ok(Self::Java),
-            "terraform" | "tf" => Ok(Self::Terraform),
-            _ => Err(format!("unknown language: {value}")),
-        }
+        let normalized = value.to_ascii_lowercase();
+        Self::ALIASES
+            .iter()
+            .find_map(|(alias, language)| (*alias == normalized).then_some(*language))
+            .ok_or_else(|| format!("unknown language: {value}"))
     }
 }
 
@@ -156,4 +189,36 @@ pub struct Entry {
     pub score: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uncovered: Vec<LineRange>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_language_names_and_aliases() {
+        let cases = [
+            ("javascript", Language::JavaScript),
+            ("js", Language::JavaScript),
+            ("typescript", Language::TypeScript),
+            ("ts", Language::TypeScript),
+            ("python", Language::Python),
+            ("py", Language::Python),
+            ("go", Language::Go),
+            ("rust", Language::Rust),
+            ("rs", Language::Rust),
+            ("java", Language::Java),
+            ("terraform", Language::Terraform),
+            ("tf", Language::Terraform),
+        ];
+
+        for (value, expected) in cases {
+            assert_eq!(value.parse::<Language>(), Ok(expected));
+            assert_eq!(value.to_ascii_uppercase().parse::<Language>(), Ok(expected));
+        }
+        assert_eq!(
+            "ruby".parse::<Language>(),
+            Err("unknown language: ruby".into())
+        );
+    }
 }

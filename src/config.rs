@@ -115,23 +115,12 @@ impl EffectiveConfig {
         cli_epsilon: Option<f64>,
         cli_jobs: Option<usize>,
     ) -> Self {
-        let languages = if cli_languages.is_empty() {
-            config.languages.unwrap_or_else(|| Language::ALL.to_vec())
-        } else {
-            cli_languages
-        };
-        let coverage = if cli_coverage.is_empty() {
-            config.coverage
-        } else {
-            cli_coverage
-        };
-        let mut excludes = if no_default_excludes {
-            Vec::new()
-        } else {
-            config
-                .default_excludes
-                .unwrap_or_else(|| DEFAULT_EXCLUDES.iter().map(ToString::to_string).collect())
-        };
+        let languages = prefer_cli(
+            cli_languages,
+            config.languages.unwrap_or_else(|| Language::ALL.to_vec()),
+        );
+        let coverage = prefer_cli(cli_coverage, config.coverage);
+        let mut excludes = base_excludes(no_default_excludes, config.default_excludes);
         excludes.extend(config.exclude);
         excludes.extend(cli_exclude);
         let mut allow = config.allow;
@@ -151,33 +140,50 @@ impl EffectiveConfig {
             top: cli_top.or(config.top),
             sort: cli_sort.or(config.sort).unwrap_or_default(),
             format: cli_format.or(config.format).unwrap_or_default(),
-            summary: cli_summary || config.summary.unwrap_or(false),
-            fail_above: cli_fail_above || config.fail_above.unwrap_or(false),
-            fail_regression: cli_fail_regression || config.fail_regression.unwrap_or(false),
+            summary: enabled(cli_summary, config.summary),
+            fail_above: enabled(cli_fail_above, config.fail_above),
+            fail_regression: enabled(cli_fail_regression, config.fail_regression),
             epsilon: cli_epsilon.or(config.epsilon).unwrap_or(DEFAULT_EPSILON),
             jobs: cli_jobs.or(config.jobs),
         }
     }
 }
 
+fn prefer_cli<T>(cli: Vec<T>, configured: Vec<T>) -> Vec<T> {
+    if cli.is_empty() { configured } else { cli }
+}
+
+fn base_excludes(no_defaults: bool, configured: Option<Vec<String>>) -> Vec<String> {
+    if no_defaults {
+        return Vec::new();
+    }
+    configured.unwrap_or_else(|| DEFAULT_EXCLUDES.iter().map(ToString::to_string).collect())
+}
+
+fn enabled(cli: bool, configured: Option<bool>) -> bool {
+    [cli, configured.unwrap_or(false)].contains(&true)
+}
+
 pub fn load(start: &Path) -> Result<Config> {
-    let mut directory = if start.is_file() {
+    let path = config_start(start)
+        .ancestors()
+        .map(|directory| directory.join(".poly-crap.toml"))
+        .find(|path| path.exists());
+    path.map_or_else(|| Ok(Config::default()), |path| read_config(&path))
+}
+
+fn config_start(start: &Path) -> &Path {
+    if start.is_file() {
         start.parent().unwrap_or(start)
     } else {
         start
-    };
-    loop {
-        let path = directory.join(".poly-crap.toml");
-        if path.exists() {
-            let raw = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
-            return toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()));
-        }
-        match directory.parent() {
-            Some(parent) => directory = parent,
-            None => return Ok(Config::default()),
-        }
     }
+}
+
+fn read_config(path: &Path) -> Result<Config> {
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
 }
 
 #[cfg(test)]

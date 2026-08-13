@@ -2,9 +2,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, error::ErrorKind};
 use poly_crap::baseline;
 use poly_crap::config::{self, EffectiveConfig};
-use poly_crap::model::{Language, MissingCoveragePolicy};
+use poly_crap::model::{Entry, Language, MissingCoveragePolicy, ScopeDiagnostics};
 use poly_crap::report::{self, OutputFormat, SortOrder};
-use poly_crap::{analyze_tree, merge, parse_coverage_files};
+use poly_crap::{Analysis, analyze_tree, merge, parse_coverage_files};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -94,8 +94,12 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
+    parse_and_run(Cli::try_parse())
+}
+
+fn parse_and_run(parsed: clap::error::Result<Cli>) -> ExitCode {
+    match parsed {
+        Ok(cli) => run_and_exit(cli),
         Err(error)
             if matches!(
                 error.kind(),
@@ -103,13 +107,16 @@ fn main() -> ExitCode {
             ) =>
         {
             print!("{error}");
-            return ExitCode::SUCCESS;
+            ExitCode::SUCCESS
         }
         Err(error) => {
             let _ = error.print();
-            return ExitCode::from(2);
+            ExitCode::from(2)
         }
-    };
+    }
+}
+
+fn run_and_exit(cli: Cli) -> ExitCode {
     match run(cli) {
         Ok(true) => ExitCode::from(1),
         Ok(false) => ExitCode::SUCCESS,
@@ -121,8 +128,29 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<bool> {
+    let (rendered, gate_failed) = build_report(&cli)?;
+    write_report(&rendered, cli.output.as_ref())?;
+    Ok(gate_failed)
+}
+
+fn build_report(cli: &Cli) -> Result<(String, bool)> {
+    let effective = effective_config(cli)?;
+    validate(cli, &effective)?;
+    let (entries, diagnostics) = collect_entries(cli, &effective)?;
+    render_report(cli, &effective, entries, diagnostics)
+}
+
+fn collect_entries(cli: &Cli, config: &EffectiveConfig) -> Result<(Vec<Entry>, ScopeDiagnostics)> {
+    let analysis = analyze_sources(&cli.path, config)?;
+    warn_diagnostics(&analysis);
+    let merged = merge_sources(analysis, config)?;
+    let entries = filter_entries(merged.entries, config)?;
+    Ok((entries, merged.diagnostics))
+}
+
+fn effective_config(cli: &Cli) -> Result<EffectiveConfig> {
     let file_config = config::load(&cli.path)?;
-    let effective = EffectiveConfig::new(
+    Ok(EffectiveConfig::new(
         file_config,
         cli.language.clone(),
         cli.coverage.clone(),
@@ -140,97 +168,144 @@ fn run(cli: Cli) -> Result<bool> {
         cli.fail_regression,
         cli.epsilon,
         cli.jobs,
-    );
-    validate(&cli, &effective)?;
+    ))
+}
 
-    let analysis = if let Some(jobs) = effective.jobs {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(jobs)
-            .build()
-            .context("creating source parsing thread pool")?
-            .install(|| analyze_tree(&cli.path, &effective.languages, &effective.excludes))?
+fn analyze_sources(path: &std::path::Path, config: &EffectiveConfig) -> Result<Analysis> {
+    let analysis = dispatch_analysis(path, config)?;
+    ensure_any_parsed(&analysis)?;
+    Ok(analysis)
+}
+
+fn dispatch_analysis(path: &std::path::Path, config: &EffectiveConfig) -> Result<Analysis> {
+    if let Some(jobs) = config.jobs {
+        analyze_in_pool(path, config, jobs)
     } else {
-        analyze_tree(&cli.path, &effective.languages, &effective.excludes)?
-    };
+        analyze_tree(path, &config.languages, &config.excludes)
+    }
+}
+
+fn analyze_in_pool(
+    path: &std::path::Path,
+    config: &EffectiveConfig,
+    jobs: usize,
+) -> Result<Analysis> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs)
+        .build()
+        .context("creating source parsing thread pool")?;
+    pool.install(|| analyze_tree(path, &config.languages, &config.excludes))
+}
+
+fn ensure_any_parsed(analysis: &Analysis) -> Result<()> {
     if analysis.candidate_files > 0 && analysis.parsed_files == 0 {
         bail!(
             "none of the {} candidate source files parsed successfully",
             analysis.candidate_files
         );
     }
+    Ok(())
+}
+
+fn warn_diagnostics(analysis: &Analysis) {
     for diagnostic in &analysis.diagnostics {
         eprintln!("warning: {}", diagnostic.message);
     }
+}
 
-    let coverage = parse_coverage_files(&effective.coverage)?;
-    let merged = merge(analysis, &coverage, effective.missing);
+fn merge_sources(analysis: Analysis, config: &EffectiveConfig) -> Result<poly_crap::MergeResult> {
+    let coverage = parse_coverage_files(&config.coverage)?;
+    let merged = merge(analysis, &coverage, config.missing);
     if merged.diagnostics.source_only_count > 0 || merged.diagnostics.coverage_only_count > 0 {
         eprintln!(
             "warning: coverage scope mismatch: {} source-only file(s), {} coverage-only file(s)",
             merged.diagnostics.source_only_count, merged.diagnostics.coverage_only_count
         );
     }
-    let entries = report::filter_entries(
-        merged.entries,
-        &effective.allow,
-        effective.min,
-        effective.top,
-        effective.sort,
-    )?;
+    Ok(merged)
+}
 
-    let (rendered, gate_failed) = if let Some(path) = &cli.baseline {
-        let baseline_entries = report::filter_entries(
-            baseline::load(path)?,
-            &effective.allow,
-            effective.min,
-            effective.top,
-            effective.sort,
-        )?;
-        let delta = baseline::compare(
-            entries,
-            &baseline_entries,
-            effective.epsilon,
-            merged.diagnostics,
-        );
-        let failed = effective.fail_regression && report::regression_failed(&delta);
-        (
-            report::render_delta(&delta, effective.format, effective.summary)?,
-            failed,
-        )
+fn filter_entries(entries: Vec<Entry>, config: &EffectiveConfig) -> Result<Vec<Entry>> {
+    report::filter_entries(entries, &config.allow, config.min, config.top, config.sort)
+}
+
+fn render_report(
+    cli: &Cli,
+    config: &EffectiveConfig,
+    entries: Vec<Entry>,
+    diagnostics: ScopeDiagnostics,
+) -> Result<(String, bool)> {
+    if let Some(path) = &cli.baseline {
+        render_delta_report(path, config, entries, diagnostics)
     } else {
-        let failed =
-            effective.fail_above && report::threshold_failed(&entries, effective.threshold);
-        (
-            report::render_absolute(
-                entries,
-                merged.diagnostics,
-                effective.format,
-                effective.threshold,
-                effective.summary,
-            )?,
-            failed,
-        )
-    };
-    write_report(&rendered, cli.output.as_ref())?;
-    Ok(gate_failed)
+        render_absolute_report(config, entries, diagnostics)
+    }
+}
+
+fn render_delta_report(
+    path: &std::path::Path,
+    config: &EffectiveConfig,
+    entries: Vec<Entry>,
+    diagnostics: ScopeDiagnostics,
+) -> Result<(String, bool)> {
+    let baseline_entries = filter_entries(baseline::load(path)?, config)?;
+    let delta = baseline::compare(entries, &baseline_entries, config.epsilon, diagnostics);
+    let failed = config.fail_regression && report::regression_failed(&delta);
+    let rendered = report::render_delta(&delta, config.format, config.summary)?;
+    Ok((rendered, failed))
+}
+
+fn render_absolute_report(
+    config: &EffectiveConfig,
+    entries: Vec<Entry>,
+    diagnostics: ScopeDiagnostics,
+) -> Result<(String, bool)> {
+    let failed = config.fail_above && report::threshold_failed(&entries, config.threshold);
+    let rendered = report::render_absolute(
+        entries,
+        diagnostics,
+        config.format,
+        config.threshold,
+        config.summary,
+    )?;
+    Ok((rendered, failed))
 }
 
 fn validate(cli: &Cli, config: &EffectiveConfig) -> Result<()> {
-    if !config.threshold.is_finite() || config.threshold < 0.0 {
-        bail!("--threshold must be a finite non-negative number");
+    validate_non_negative("threshold", config.threshold)?;
+    validate_non_negative("epsilon", config.epsilon)?;
+    validate_non_zero("jobs", config.jobs)?;
+    validate_non_zero("top", config.top)?;
+    validate_modes(cli, config)
+}
+
+fn validate_non_negative(name: &str, value: f64) -> Result<()> {
+    if !value.is_finite() || value < 0.0 {
+        bail!("--{name} must be a finite non-negative number");
     }
-    if !config.epsilon.is_finite() || config.epsilon < 0.0 {
-        bail!("--epsilon must be a finite non-negative number");
+    Ok(())
+}
+
+fn validate_non_zero(name: &str, value: Option<usize>) -> Result<()> {
+    if value == Some(0) {
+        bail!("--{name} must be greater than zero");
     }
-    if config.jobs == Some(0) {
-        bail!("--jobs must be greater than zero");
-    }
-    if config.top == Some(0) {
-        bail!("--top must be greater than zero");
-    }
+    Ok(())
+}
+
+fn validate_modes(cli: &Cli, config: &EffectiveConfig) -> Result<()> {
+    validate_baseline_format(cli, config)?;
+    validate_regression_mode(cli, config)
+}
+
+fn validate_baseline_format(cli: &Cli, config: &EffectiveConfig) -> Result<()> {
     if cli.baseline.is_some() && config.format == OutputFormat::Sarif {
         bail!("--baseline cannot be combined with --format sarif");
     }
+    Ok(())
+}
+
+fn validate_regression_mode(cli: &Cli, config: &EffectiveConfig) -> Result<()> {
     if config.fail_regression && cli.baseline.is_none() {
         bail!("fail-regression in config requires --baseline");
     }
@@ -277,5 +352,14 @@ mod tests {
     #[test]
     fn help_contract_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn parse_errors_use_cli_exit_codes() {
+        assert_eq!(parse_and_run(parse(&["--help"])), ExitCode::SUCCESS);
+        assert_eq!(
+            parse_and_run(parse(&["--not-an-option"])),
+            ExitCode::from(2)
+        );
     }
 }

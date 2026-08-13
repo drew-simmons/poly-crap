@@ -2,7 +2,7 @@ use crate::baseline::{DeltaReport, DeltaStatus};
 use crate::model::{Entry, MetricKind, ScopeDiagnostics};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
-use globset::{GlobBuilder, GlobSetBuilder};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::io::Write;
@@ -55,32 +55,64 @@ pub fn filter_entries(
     top: Option<usize>,
     sort: SortOrder,
 ) -> Result<Vec<Entry>> {
+    let (names, paths) = build_allow_sets(allow)?;
+    entries.retain(|entry| {
+        !names.is_match(&entry.symbol)
+            && !paths.is_match(entry.file.to_string_lossy().replace('\\', "/"))
+            && min.is_none_or(|minimum| entry.score >= minimum)
+    });
+    apply_top(&mut entries, top);
+    sort_entries(&mut entries, sort);
+    Ok(entries)
+}
+
+fn build_allow_sets(allow: &[String]) -> Result<(GlobSet, GlobSet)> {
     let mut name_builder = GlobSetBuilder::new();
     let mut path_builder = GlobSetBuilder::new();
     for pattern in allow {
-        let glob = GlobBuilder::new(pattern)
-            .literal_separator(pattern.contains('/') || pattern.contains("**"))
-            .build()
-            .with_context(|| format!("invalid allow pattern: {pattern}"))?;
-        if pattern.contains('/') || pattern.contains("**") {
-            path_builder.add(glob);
-        } else {
-            name_builder.add(glob);
-        }
+        add_allow_pattern(pattern, &mut name_builder, &mut path_builder)?;
     }
+    finish_allow_sets(name_builder, path_builder)
+}
+
+fn finish_allow_sets(
+    name_builder: GlobSetBuilder,
+    path_builder: GlobSetBuilder,
+) -> Result<(GlobSet, GlobSet)> {
     let names = name_builder
         .build()
         .context("building symbol allow patterns")?;
     let paths = path_builder
         .build()
         .context("building path allow patterns")?;
-    entries.retain(|entry| {
-        !names.is_match(&entry.symbol)
-            && !paths.is_match(entry.file.to_string_lossy().replace('\\', "/"))
-            && min.is_none_or(|minimum| entry.score >= minimum)
-    });
+    Ok((names, paths))
+}
+
+fn add_allow_pattern(
+    pattern: &str,
+    names: &mut GlobSetBuilder,
+    paths: &mut GlobSetBuilder,
+) -> Result<()> {
+    let path_pattern = is_path_pattern(pattern);
+    let glob = GlobBuilder::new(pattern)
+        .literal_separator(path_pattern)
+        .build()
+        .with_context(|| format!("invalid allow pattern: {pattern}"))?;
+    if path_pattern {
+        paths.add(glob);
+    } else {
+        names.add(glob);
+    }
+    Ok(())
+}
+
+fn is_path_pattern(pattern: &str) -> bool {
+    pattern.contains('/') || pattern.contains("**")
+}
+
+fn apply_top(entries: &mut Vec<Entry>, top: Option<usize>) {
     if let Some(limit) = top {
-        sort_entries(&mut entries, SortOrder::Crap);
+        sort_entries(entries, SortOrder::Crap);
         let mut seen = [0usize; 2];
         entries.retain(|entry| {
             let index = usize::from(entry.metric == MetricKind::Complexity);
@@ -88,8 +120,6 @@ pub fn filter_entries(
             seen[index] <= limit
         });
     }
-    sort_entries(&mut entries, sort);
-    Ok(entries)
 }
 
 pub fn sort_entries(entries: &mut [Entry], sort: SortOrder) {
@@ -160,7 +190,14 @@ fn render_human(
         .iter()
         .filter(|entry| entry.metric == MetricKind::Complexity)
         .collect();
-    let failures = crap_entries
+    render_crap_section(&mut output, &crap_entries, threshold, summary);
+    render_terraform_section(&mut output, &terraform_entries, summary);
+    append_scope_summary(&mut output, diagnostics);
+    String::from_utf8(output).expect("human report is UTF-8")
+}
+
+fn render_crap_section(output: &mut Vec<u8>, entries: &[&Entry], threshold: f64, summary: bool) {
+    let failures = entries
         .iter()
         .filter(|entry| entry.score > threshold)
         .count();
@@ -171,106 +208,72 @@ fn render_human(
             "  CRAP     CC  Coverage  Language    Symbol  Location"
         )
         .unwrap();
-        for entry in crap_entries {
-            let coverage = entry
-                .coverage
-                .map_or_else(|| "N/A".into(), |value| format!("{value:.1}%"));
-            writeln!(
-                output,
-                "  {:>7.1}  {:>5.1}  {:>8}  {:<10}  {}  {}:{}",
-                entry.score,
-                entry.complexity,
-                coverage,
-                entry.language,
-                entry.symbol,
-                entry.file.display(),
-                entry.start_line
-            )
-            .unwrap();
+        for entry in entries {
+            render_crap_entry(output, entry);
         }
     }
     writeln!(
         output,
         "{} of {} function(s) exceed CRAP threshold {threshold:.1}.",
         failures,
-        entries
-            .iter()
-            .filter(|entry| entry.metric == MetricKind::Crap)
-            .count()
+        entries.len()
     )
     .unwrap();
+}
 
-    if !terraform_entries.is_empty() {
+fn render_crap_entry(output: &mut Vec<u8>, entry: &Entry) {
+    let coverage = entry
+        .coverage
+        .map_or_else(|| "N/A".into(), |value| format!("{value:.1}%"));
+    writeln!(
+        output,
+        "  {:>7.1}  {:>5.1}  {:>8}  {:<10}  {}  {}:{}",
+        entry.score,
+        entry.complexity,
+        coverage,
+        entry.language,
+        entry.symbol,
+        entry.file.display(),
+        entry.start_line
+    )
+    .unwrap();
+}
+
+fn render_terraform_section(output: &mut Vec<u8>, entries: &[&Entry], summary: bool) {
+    if !entries.is_empty() {
         writeln!(output, "\nTerraform complexity").unwrap();
         if !summary {
             writeln!(output, "  Complexity  Block  Location").unwrap();
-            for entry in terraform_entries {
-                writeln!(
-                    output,
-                    "  {:>10.1}  {}  {}:{}",
-                    entry.score,
-                    entry.symbol,
-                    entry.file.display(),
-                    entry.start_line
-                )
-                .unwrap();
+            for entry in entries {
+                render_terraform_entry(output, entry);
             }
         }
         writeln!(
             output,
             "{} Terraform block(s) analyzed; CRAP threshold does not apply.",
-            entries
-                .iter()
-                .filter(|entry| entry.metric == MetricKind::Complexity)
-                .count()
+            entries.len()
         )
         .unwrap();
     }
-    append_scope_summary(&mut output, diagnostics);
-    String::from_utf8(output).expect("human report is UTF-8")
+}
+
+fn render_terraform_entry(output: &mut Vec<u8>, entry: &Entry) {
+    writeln!(
+        output,
+        "  {:>10.1}  {}  {}:{}",
+        entry.score,
+        entry.symbol,
+        entry.file.display(),
+        entry.start_line
+    )
+    .unwrap();
 }
 
 fn render_delta_human(report: &DeltaReport, summary: bool) -> String {
     let mut output = Vec::new();
     writeln!(output, "Changes since baseline").unwrap();
     if !summary {
-        writeln!(
-            output,
-            "  Status     Score    Delta  Language    Symbol  Location"
-        )
-        .unwrap();
-        for entry in report
-            .entries
-            .iter()
-            .filter(|entry| entry.status != DeltaStatus::Unchanged)
-        {
-            let delta = entry
-                .delta
-                .map_or_else(|| "N/A".into(), |value| format!("{value:+.2}"));
-            writeln!(
-                output,
-                "  {:<10} {:>7.1}  {:>7}  {:<10}  {}  {}:{}",
-                format!("{:?}", entry.status).to_ascii_lowercase(),
-                entry.current.score,
-                delta,
-                entry.current.language,
-                entry.current.symbol,
-                entry.current.file.display(),
-                entry.current.start_line
-            )
-            .unwrap();
-        }
-        for entry in &report.removed {
-            writeln!(
-                output,
-                "  removed    {:>7.1}      N/A  {:<10}  {}  {}",
-                entry.baseline_score,
-                entry.language,
-                entry.symbol,
-                entry.file.display()
-            )
-            .unwrap();
-        }
+        render_delta_rows(&mut output, report);
     }
     let regressions = report
         .entries
@@ -280,6 +283,50 @@ fn render_delta_human(report: &DeltaReport, summary: bool) -> String {
     writeln!(output, "{regressions} regression(s) found.").unwrap();
     append_scope_summary(&mut output, &report.diagnostics);
     String::from_utf8(output).expect("human report is UTF-8")
+}
+
+fn render_delta_rows(output: &mut Vec<u8>, report: &DeltaReport) {
+    writeln!(
+        output,
+        "  Status     Score    Delta  Language    Symbol  Location"
+    )
+    .unwrap();
+    for entry in report
+        .entries
+        .iter()
+        .filter(|entry| entry.status != DeltaStatus::Unchanged)
+    {
+        render_delta_entry(output, entry);
+    }
+    for entry in &report.removed {
+        writeln!(
+            output,
+            "  removed    {:>7.1}      N/A  {:<10}  {}  {}",
+            entry.baseline_score,
+            entry.language,
+            entry.symbol,
+            entry.file.display()
+        )
+        .unwrap();
+    }
+}
+
+fn render_delta_entry(output: &mut Vec<u8>, entry: &crate::baseline::DeltaEntry) {
+    let delta = entry
+        .delta
+        .map_or_else(|| "N/A".into(), |value| format!("{value:+.2}"));
+    writeln!(
+        output,
+        "  {:<10} {:>7.1}  {:>7}  {:<10}  {}  {}:{}",
+        format!("{:?}", entry.status).to_ascii_lowercase(),
+        entry.current.score,
+        delta,
+        entry.current.language,
+        entry.current.symbol,
+        entry.current.file.display(),
+        entry.current.start_line
+    )
+    .unwrap();
 }
 
 fn append_scope_summary(output: &mut Vec<u8>, diagnostics: &ScopeDiagnostics) {
@@ -364,6 +411,7 @@ pub fn regression_failed(report: &DeltaReport) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::baseline::{DeltaEntry, RemovedEntry};
     use crate::model::{CoverageBasis, Language};
     use std::path::PathBuf;
 
@@ -385,6 +433,22 @@ mod tests {
             crap: (metric == MetricKind::Crap).then_some(score),
             score,
             uncovered: Vec::new(),
+        }
+    }
+
+    fn diagnostics() -> ScopeDiagnostics {
+        ScopeDiagnostics {
+            candidate_files: 2,
+            parsed_files: 2,
+            analyzed_files: 2,
+            coverage_files: 1,
+            matched_files: 1,
+            source_only_count: 1,
+            coverage_only_count: 0,
+            warning_count: 1,
+            source_only_examples: Vec::new(),
+            coverage_only_examples: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -412,5 +476,64 @@ mod tests {
         )
         .unwrap();
         assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn allow_patterns_filter_names_and_paths() {
+        let mut generated = entry(MetricKind::Crap, 4.0);
+        generated.file = PathBuf::from("generated/a.rs");
+        generated.symbol = "keep".into();
+        let filtered = filter_entries(
+            vec![entry(MetricKind::Crap, 3.0), generated],
+            &["run".into(), "generated/**".into()],
+            None,
+            None,
+            SortOrder::Crap,
+        )
+        .unwrap();
+        assert!(filtered.is_empty());
+        assert!(filter_entries(Vec::new(), &["[".into()], None, None, SortOrder::Crap).is_err());
+    }
+
+    #[test]
+    fn human_output_separates_metrics() {
+        let entries = vec![
+            entry(MetricKind::Crap, 6.0),
+            entry(MetricKind::Complexity, 3.0),
+        ];
+        let report = render_human(&entries, &diagnostics(), 5.0, false);
+        assert!(report.contains("CRAP results"));
+        assert!(report.contains("Terraform complexity"));
+        assert!(render_human(&entries, &diagnostics(), 5.0, true).contains("2 analyzed file"));
+        assert!(
+            !render_human(&entries[..1], &diagnostics(), 5.0, false)
+                .contains("Terraform complexity")
+        );
+    }
+
+    #[test]
+    fn delta_human_lists_changes_and_removals() {
+        let current = entry(MetricKind::Crap, 8.0);
+        let report = DeltaReport {
+            entries: vec![DeltaEntry {
+                current,
+                baseline_score: Some(4.0),
+                delta: Some(4.0),
+                status: DeltaStatus::Regressed,
+                previous_file: None,
+            }],
+            removed: vec![RemovedEntry {
+                language: Language::Rust,
+                file: PathBuf::from("src/old.rs"),
+                symbol: "old".into(),
+                metric: MetricKind::Crap,
+                baseline_score: 2.0,
+            }],
+            diagnostics: diagnostics(),
+        };
+        let rendered = render_delta_human(&report, false);
+        assert!(rendered.contains("regressed"));
+        assert!(rendered.contains("removed"));
+        assert!(render_delta_human(&report, true).contains("1 regression"));
     }
 }
