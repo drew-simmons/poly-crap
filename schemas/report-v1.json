@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/drew-simmons/poly-crap/main/schemas/report-v1.json",
+  "title": "poly-crap absolute report v1",
+  "type": "object",
+  "required": ["$schema", "version", "entries", "diagnostics"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "type": "string" },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    },
+    "diagnostics": { "$ref": "#/$defs/diagnostics" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["language", "file", "symbol", "start_line", "end_line", "metric", "complexity", "coverage", "coverage_basis", "crap", "score"],
+      "properties": {
+        "language": { "enum": ["javascript", "typescript", "python", "go", "rust", "java", "terraform"] },
+        "file": { "type": "string" },
+        "symbol": { "type": "string" },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "metric": { "enum": ["crap", "complexity"] },
+        "complexity": { "type": "number", "minimum": 1 },
+        "coverage": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "coverage_basis": { "enum": ["line", "statement", null] },
+        "crap": { "type": ["number", "null"] },
+        "score": { "type": "number" },
+        "uncovered": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["start", "end"],
+            "properties": {
+              "start": { "type": "integer", "minimum": 1 },
+              "end": { "type": "integer", "minimum": 1 }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "diagnostics": {
+      "type": "object",
+      "required": ["candidate_files", "parsed_files", "analyzed_files", "coverage_files", "matched_files", "source_only_count", "coverage_only_count", "warning_count", "source_only_examples", "coverage_only_examples", "warnings"],
+      "properties": {
+        "candidate_files": { "type": "integer", "minimum": 0 },
+        "parsed_files": { "type": "integer", "minimum": 0 },
+        "analyzed_files": { "type": "integer", "minimum": 0 },
+        "coverage_files": { "type": "integer", "minimum": 0 },
+        "matched_files": { "type": "integer", "minimum": 0 },
+        "source_only_count": { "type": "integer", "minimum": 0 },
+        "coverage_only_count": { "type": "integer", "minimum": 0 },
+        "warning_count": { "type": "integer", "minimum": 0 },
+        "source_only_examples": { "type": "array", "items": { "type": "string" } },
+        "coverage_only_examples": { "type": "array", "items": { "type": "string" } },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "message"],
+            "properties": {
+              "kind": { "type": "string" },
+              "message": { "type": "string" },
+              "file": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
