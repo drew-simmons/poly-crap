@@ -29,6 +29,30 @@ pub fn analyze_tree(root: &Path, languages: &[Language], excludes: &[String]) ->
     let exclude_set = build_globs(excludes)?;
     let enabled: HashSet<_> = languages.iter().copied().collect();
     let paths = discover_paths(root, &enabled, &exclude_set);
+    analyze_discovered(paths)
+}
+
+pub fn analyze_paths(
+    root: &Path,
+    languages: &[Language],
+    excludes: &[String],
+    selected: &[std::path::PathBuf],
+) -> Result<Analysis> {
+    validate_root(root)?;
+    let exclude_set = build_globs(excludes)?;
+    let enabled: HashSet<_> = languages.iter().copied().collect();
+    let selected: HashSet<_> = selected.iter().cloned().collect();
+    let paths = discover_paths(root, &enabled, &exclude_set)
+        .into_iter()
+        .filter(|(path, _)| {
+            let relative = path.strip_prefix(root).unwrap_or(path);
+            selected.contains(relative)
+        })
+        .collect();
+    analyze_discovered(paths)
+}
+
+fn analyze_discovered(paths: Vec<(std::path::PathBuf, Language)>) -> Result<Analysis> {
     let results: Vec<_> = paths
         .par_iter()
         .map(|(path, language)| analyze_file(path, *language))

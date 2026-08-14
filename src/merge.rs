@@ -14,6 +14,23 @@ pub struct MergeResult {
 }
 
 pub fn merge(
+    analysis: Analysis,
+    coverage: &CoverageMap,
+    policy: MissingCoveragePolicy,
+) -> MergeResult {
+    merge_inner(analysis, coverage, policy)
+}
+
+pub fn merge_selected(
+    analysis: Analysis,
+    coverage: &CoverageMap,
+    policy: MissingCoveragePolicy,
+) -> MergeResult {
+    let scoped = scoped_coverage(&analysis, coverage);
+    merge_inner(analysis, &scoped, policy)
+}
+
+fn merge_inner(
     mut analysis: Analysis,
     coverage: &CoverageMap,
     policy: MissingCoveragePolicy,
@@ -69,6 +86,16 @@ pub fn merge(
             warning_count,
         ),
     }
+}
+
+fn scoped_coverage(analysis: &Analysis, coverage: &CoverageMap) -> CoverageMap {
+    analysis
+        .units
+        .iter()
+        .filter(|unit| unit.language != Language::Terraform)
+        .filter_map(|unit| lookup_coverage(&unit.file, coverage))
+        .map(|(path, file)| (path.clone(), file.clone()))
+        .collect()
 }
 
 fn merge_unit(
