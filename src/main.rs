@@ -193,11 +193,26 @@ fn analyze_sources(
     cli: &Cli,
     config: &EffectiveConfig,
 ) -> Result<(Analysis, Option<git_diff::GitDiff>)> {
-    let Some(base) = &cli.diff_base else {
-        let analysis = dispatch_analysis(&cli.path, config)?;
-        ensure_any_parsed(&analysis)?;
-        return Ok((analysis, None));
-    };
+    match &cli.diff_base {
+        Some(base) => analyze_diff_sources(cli, config, base),
+        None => analyze_all_sources(&cli.path, config),
+    }
+}
+
+fn analyze_all_sources(
+    path: &std::path::Path,
+    config: &EffectiveConfig,
+) -> Result<(Analysis, Option<git_diff::GitDiff>)> {
+    let analysis = dispatch_analysis(path, config)?;
+    ensure_any_parsed(&analysis)?;
+    Ok((analysis, None))
+}
+
+fn analyze_diff_sources(
+    cli: &Cli,
+    config: &EffectiveConfig,
+    base: &str,
+) -> Result<(Analysis, Option<git_diff::GitDiff>)> {
     let diff = git_diff::discover(&cli.path, base)?;
     let selected = diff.selected_paths();
     let mut analysis = dispatch_selected_analysis(&cli.path, config, &selected)?;
@@ -264,18 +279,31 @@ fn merge_sources(
     selected: bool,
 ) -> Result<poly_crap::MergeResult> {
     let coverage = parse_coverage_files(&config.coverage)?;
-    let merged = if selected {
-        merge_selected(analysis, &coverage, config.missing)
+    let merged = merge_for_scope(analysis, &coverage, config, selected);
+    warn_coverage_scope(&merged);
+    Ok(merged)
+}
+
+fn merge_for_scope(
+    analysis: Analysis,
+    coverage: &poly_crap::CoverageMap,
+    config: &EffectiveConfig,
+    selected: bool,
+) -> poly_crap::MergeResult {
+    if selected {
+        merge_selected(analysis, coverage, config.missing)
     } else {
-        merge(analysis, &coverage, config.missing)
-    };
+        merge(analysis, coverage, config.missing)
+    }
+}
+
+fn warn_coverage_scope(merged: &poly_crap::MergeResult) {
     if merged.diagnostics.source_only_count > 0 || merged.diagnostics.coverage_only_count > 0 {
         eprintln!(
             "warning: coverage scope mismatch: {} source-only file(s), {} coverage-only file(s)",
             merged.diagnostics.source_only_count, merged.diagnostics.coverage_only_count
         );
     }
-    Ok(merged)
 }
 
 fn filter_entries(entries: Vec<Entry>, config: &EffectiveConfig) -> Result<Vec<Entry>> {
@@ -322,16 +350,31 @@ fn render_absolute_report(
         config.threshold,
         config.summary,
     )?;
-    if config.format == OutputFormat::Human
-        && let (Some(requested), Some(diff)) = (&cli.diff_base, collected.diff)
-    {
-        rendered = format!(
-            "Git diff against {requested} from {}: {} changed file(s), {selected_units} selected unit(s).\n{rendered}",
-            diff.merge_base,
-            diff.files.len(),
-        );
-    }
+    add_diff_summary(
+        &mut rendered,
+        config.format,
+        cli.diff_base.as_deref(),
+        collected.diff,
+        selected_units,
+    );
     Ok((rendered, failed))
+}
+
+fn add_diff_summary(
+    rendered: &mut String,
+    format: OutputFormat,
+    requested: Option<&str>,
+    diff: Option<git_diff::GitDiff>,
+    selected_units: usize,
+) {
+    let (OutputFormat::Human, Some(requested), Some(diff)) = (format, requested, diff) else {
+        return;
+    };
+    *rendered = format!(
+        "Git diff against {requested} from {}: {} changed file(s), {selected_units} selected unit(s).\n{rendered}",
+        diff.merge_base,
+        diff.files.len(),
+    );
 }
 
 fn validate(cli: &Cli, config: &EffectiveConfig) -> Result<()> {

@@ -40,16 +40,35 @@ impl GitDiff {
 }
 
 pub fn discover(root: &Path, requested_base: &str) -> Result<GitDiff> {
+    validate_requested_base(requested_base)?;
+    discover_validated(root, requested_base)
+}
+
+fn discover_validated(root: &Path, requested_base: &str) -> Result<GitDiff> {
+    let (repository, relative_root) = repository_scope(root)?;
+    let base_commit = resolve_commit(&repository, requested_base)?;
+    let merge_base = resolve_merge_base(&repository, &base_commit)?;
+    let files = collect_changed_files(&repository, &merge_base, &relative_root)?;
+    Ok(GitDiff { merge_base, files })
+}
+
+fn validate_requested_base(requested_base: &str) -> Result<()> {
     if requested_base.starts_with('-') {
         bail!("Git diff base cannot start with '-': {requested_base}");
     }
-    let canonical_root = root
-        .canonicalize()
-        .with_context(|| format!("resolving analysis path {}", root.display()))?;
-    if !canonical_root.is_dir() {
-        bail!("analysis path is not a directory: {}", root.display());
-    }
+    Ok(())
+}
+
+fn repository_scope(root: &Path) -> Result<(PathBuf, PathBuf)> {
+    let canonical_root = canonical_analysis_root(root)?;
     let repository = repository_root(&canonical_root)?;
+    relative_repository_root(canonical_root, repository)
+}
+
+fn relative_repository_root(
+    canonical_root: PathBuf,
+    repository: PathBuf,
+) -> Result<(PathBuf, PathBuf)> {
     let relative_root = canonical_root.strip_prefix(&repository).map_err(|_| {
         anyhow!(
             "analysis path {} is outside Git repository {}",
@@ -57,36 +76,72 @@ pub fn discover(root: &Path, requested_base: &str) -> Result<GitDiff> {
             repository.display()
         )
     })?;
-    let base_commit = resolve_commit(&repository, requested_base)?;
-    let merge_base = resolve_merge_base(&repository, &base_commit)?;
-    let changes = tracked_changes(&repository, &merge_base, relative_root)?;
-    let mut files = BTreeMap::new();
-    for change in changes {
-        let Some(relative) = scan_relative(&change.current_path, relative_root) else {
-            continue;
-        };
-        let current = repository.join(&change.current_path);
-        if !current.is_file() {
-            continue;
-        }
-        let ranges = changed_ranges(&repository, &merge_base, &change)?;
-        files.insert(relative, ranges);
+    Ok((repository, relative_root.to_path_buf()))
+}
+
+fn canonical_analysis_root(root: &Path) -> Result<PathBuf> {
+    let canonical_root = root
+        .canonicalize()
+        .with_context(|| format!("resolving analysis path {}", root.display()))?;
+    if !canonical_root.is_dir() {
+        bail!("analysis path is not a directory: {}", root.display());
     }
-    for path in untracked_files(&repository, relative_root)? {
-        let Some(relative) = scan_relative(&path, relative_root) else {
-            continue;
-        };
-        if repository.join(&path).is_file() {
-            files.insert(
-                relative,
-                vec![LineRange {
-                    start: 1,
-                    end: usize::MAX,
-                }],
-            );
-        }
+    Ok(canonical_root)
+}
+
+fn collect_changed_files(
+    repository: &Path,
+    merge_base: &str,
+    relative_root: &Path,
+) -> Result<BTreeMap<PathBuf, Vec<LineRange>>> {
+    let tracked = tracked_changes(repository, merge_base, relative_root)?;
+    let mut files = tracked
+        .into_iter()
+        .map(|change| tracked_file(repository, merge_base, relative_root, &change))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    for path in untracked_files(repository, relative_root)? {
+        add_untracked_file(&mut files, repository, relative_root, &path);
     }
-    Ok(GitDiff { merge_base, files })
+    Ok(files)
+}
+
+fn tracked_file(
+    repository: &Path,
+    merge_base: &str,
+    relative_root: &Path,
+    change: &TrackedChange,
+) -> Result<Option<(PathBuf, Vec<LineRange>)>> {
+    let Some(relative) = scan_relative(&change.current_path, relative_root) else {
+        return Ok(None);
+    };
+    if !repository.join(&change.current_path).is_file() {
+        return Ok(None);
+    }
+    let ranges = changed_ranges(repository, merge_base, change)?;
+    Ok(Some((relative, ranges)))
+}
+
+fn add_untracked_file(
+    files: &mut BTreeMap<PathBuf, Vec<LineRange>>,
+    repository: &Path,
+    relative_root: &Path,
+    path: &Path,
+) {
+    let Some(relative) = scan_relative(path, relative_root) else {
+        return;
+    };
+    if repository.join(path).is_file() {
+        files.insert(
+            relative,
+            vec![LineRange {
+                start: 1,
+                end: usize::MAX,
+            }],
+        );
+    }
 }
 
 fn repository_root(root: &Path) -> Result<PathBuf> {
@@ -167,38 +222,88 @@ fn parse_name_status(raw: &[u8]) -> Result<Vec<TrackedChange>> {
     let mut changes = Vec::new();
     let mut index = 0;
     while index < fields.len() {
-        let status = std::str::from_utf8(fields[index]).context("reading Git change status")?;
-        index += 1;
-        let kind = status
-            .chars()
-            .next()
-            .ok_or_else(|| anyhow!("Git returned an empty change status"))?;
-        if matches!(kind, 'R' | 'C') {
-            let old = fields
-                .get(index)
-                .ok_or_else(|| anyhow!("Git omitted the old path for status {status}"))?;
-            let current = fields
-                .get(index + 1)
-                .ok_or_else(|| anyhow!("Git omitted the new path for status {status}"))?;
-            index += 2;
-            changes.push(TrackedChange {
-                old_path: Some(path_from_bytes(old)?),
-                current_path: path_from_bytes(current)?,
-            });
-        } else {
-            let path = fields
-                .get(index)
-                .ok_or_else(|| anyhow!("Git omitted the path for status {status}"))?;
-            index += 1;
-            if kind != 'D' {
-                changes.push(TrackedChange {
-                    old_path: None,
-                    current_path: path_from_bytes(path)?,
-                });
-            }
-        }
+        changes.extend(parse_name_status_entry(&fields, &mut index)?);
     }
     Ok(changes)
+}
+
+fn parse_name_status_entry(fields: &[&[u8]], index: &mut usize) -> Result<Option<TrackedChange>> {
+    let status = next_status_field(fields, index)?;
+    if is_rename_or_copy(status) {
+        parse_renamed_change(fields, index, status).map(Some)
+    } else {
+        parse_single_change(fields, index, status)
+    }
+}
+
+fn next_status_field<'a>(fields: &'a [&[u8]], index: &mut usize) -> Result<&'a str> {
+    let raw = next_field(fields, index, "Git omitted a change status")?;
+    std::str::from_utf8(raw).context("reading Git change status")
+}
+
+fn next_field<'a>(fields: &'a [&[u8]], index: &mut usize, message: &str) -> Result<&'a [u8]> {
+    let field = fields
+        .get(*index)
+        .ok_or_else(|| anyhow!(message.to_owned()))?;
+    *index += 1;
+    Ok(field)
+}
+
+fn is_rename_or_copy(status: &str) -> bool {
+    status.starts_with('R') || status.starts_with('C')
+}
+
+fn parse_renamed_change(
+    fields: &[&[u8]],
+    index: &mut usize,
+    status: &str,
+) -> Result<TrackedChange> {
+    let (old, current) = renamed_paths(fields, index, status)?;
+    change_from_paths(old, current)
+}
+
+fn renamed_paths<'a>(
+    fields: &'a [&[u8]],
+    index: &mut usize,
+    status: &str,
+) -> Result<(&'a [u8], &'a [u8])> {
+    let old = next_field(
+        fields,
+        index,
+        &format!("Git omitted the old path for status {status}"),
+    )?;
+    let current = next_field(
+        fields,
+        index,
+        &format!("Git omitted the new path for status {status}"),
+    )?;
+    Ok((old, current))
+}
+
+fn change_from_paths(old: &[u8], current: &[u8]) -> Result<TrackedChange> {
+    Ok(TrackedChange {
+        old_path: Some(path_from_bytes(old)?),
+        current_path: path_from_bytes(current)?,
+    })
+}
+
+fn parse_single_change(
+    fields: &[&[u8]],
+    index: &mut usize,
+    status: &str,
+) -> Result<Option<TrackedChange>> {
+    let path = next_field(
+        fields,
+        index,
+        &format!("Git omitted the path for status {status}"),
+    )?;
+    if status.starts_with('D') {
+        return Ok(None);
+    }
+    Ok(Some(TrackedChange {
+        old_path: None,
+        current_path: path_from_bytes(path)?,
+    }))
 }
 
 fn changed_ranges(
@@ -240,11 +345,16 @@ fn parse_hunks(raw: &[u8]) -> Result<Vec<LineRange>> {
 
 fn parse_hunk(line: &[u8]) -> Result<LineRange> {
     let header = std::str::from_utf8(line).context("reading Git diff hunk")?;
-    let current = header
+    let range = header
         .split_ascii_whitespace()
         .find(|part| part.starts_with('+'))
-        .ok_or_else(|| anyhow!("invalid Git diff hunk: {header}"))?;
-    let range = current.trim_start_matches('+');
+        .ok_or_else(|| anyhow!("invalid Git diff hunk: {header}"))?
+        .trim_start_matches('+');
+    let (start, count) = parse_hunk_range(range, header)?;
+    Ok(current_line_range(start, count))
+}
+
+fn parse_hunk_range(range: &str, header: &str) -> Result<(usize, usize)> {
     let (start, count) = range
         .split_once(',')
         .map_or((range, "1"), |(start, count)| (start, count));
@@ -254,17 +364,21 @@ fn parse_hunk(line: &[u8]) -> Result<LineRange> {
     let count = count
         .parse::<usize>()
         .with_context(|| format!("invalid Git diff hunk length: {header}"))?;
+    Ok((start, count))
+}
+
+fn current_line_range(start: usize, count: usize) -> LineRange {
     if count == 0 {
         let anchor = start.max(1);
-        return Ok(LineRange {
+        return LineRange {
             start: anchor,
             end: anchor,
-        });
+        };
     }
-    Ok(LineRange {
+    LineRange {
         start,
         end: start.saturating_add(count - 1),
-    })
+    }
 }
 
 fn untracked_files(repository: &Path, relative_root: &Path) -> Result<Vec<PathBuf>> {
