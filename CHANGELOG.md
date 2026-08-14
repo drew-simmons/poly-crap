@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/drew-simmons/poly-crap/compare/v0.1.1...v0.2.0) (2026-08-14)
+
+
+### Features
+
+* add Git diff checks for changed functions and Terraform blocks ([#8](https://github.com/drew-simmons/poly-crap/issues/8)) ([fad4d50](https://github.com/drew-simmons/poly-crap/commit/fad4d5024d99f5215b1a9a6342c4502f68fe5926))
+
 ## [0.1.1](https://github.com/drew-simmons/poly-crap/compare/v0.1.0...v0.1.1) (2026-08-13)
 
 
