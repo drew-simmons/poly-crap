@@ -116,6 +116,26 @@ Accepted short names include `js`, `ts`, `py`, and `tf`. The scanner respects
 `.gitignore` and skips common dependency, build, generated, and test paths.
 Use `--exclude`, `--allow`, or `--no-default-excludes` to change the scope.
 
+### Git diff checks
+
+Limit a run to functions and Terraform blocks changed on a local branch by
+naming its base revision:
+
+```sh
+poly-crap --diff-base main --coverage coverage.lcov --fail-above
+```
+
+Poly-crap finds the merge base of the named revision and `HEAD`, then includes
+committed branch changes, staged and unstaged changes, and untracked files. A
+unit enters the report when its current line range meets an added or changed
+line. Its score still uses the whole current function or block and its current
+coverage.
+
+Git diff mode ignores deleted units and works with the normal language, path,
+exclude, allow, output, and threshold options. It cannot be combined with
+`--baseline` or `--fail-regression`. Git must be installed, the analysis path
+must be inside a Git repository, and the base must name a commit.
+
 ### Missing coverage
 
 Functions with no matching coverage use the pessimistic policy and count as

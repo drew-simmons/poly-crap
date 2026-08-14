@@ -1,0 +1,372 @@
+use assert_cmd::cargo::cargo_bin_cmd;
+use predicates::prelude::*;
+use serde_json::Value;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+fn write(path: &Path, value: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    fs::write(path, value).unwrap();
+}
+
+fn git(directory: &Path, arguments: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        arguments.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn init(directory: &Path) {
+    git(directory, &["init", "-b", "main"]);
+    git(directory, &["config", "user.email", "test@example.com"]);
+    git(directory, &["config", "user.name", "Test User"]);
+    git(directory, &["config", "commit.gpgsign", "false"]);
+}
+
+fn commit_all(directory: &Path, message: &str) {
+    git(directory, &["add", "."]);
+    git(directory, &["commit", "-m", message]);
+}
+
+fn json_report(directory: &Path, extra: &[&str]) -> Value {
+    let mut command = cargo_bin_cmd!("poly-crap");
+    command.args([
+        "--path",
+        directory.to_str().unwrap(),
+        "--diff-base",
+        "main",
+        "--format",
+        "json",
+    ]);
+    command.args(extra);
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn symbols(report: &Value) -> Vec<&str> {
+    report["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["symbol"].as_str().unwrap())
+        .collect()
+}
+
+#[test]
+fn reports_only_the_changed_function_and_gates_it() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    let source = dir.path().join("app.py");
+    write(
+        &source,
+        "def edited(x):\n    return x\n\ndef untouched(a, b, c):\n    if a:\n        if b:\n            if c:\n                return 1\n    return 0\n",
+    );
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["checkout", "-b", "topic"]);
+    write(
+        &source,
+        "def edited(a, b, c):\n    if a:\n        if b:\n            if c:\n                return 1\n    return 0\n\ndef untouched(a, b, c):\n    if a:\n        if b:\n            if c:\n                return 1\n    return 0\n",
+    );
+
+    let report = json_report(dir.path(), &[]);
+    assert_eq!(symbols(&report), ["edited"]);
+    let schema: Value = serde_json::from_str(include_str!("../schemas/report-v1.json")).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&report));
+
+    cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--diff-base",
+            "main",
+            "--threshold",
+            "10",
+            "--fail-above",
+        ])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("1 selected unit(s)"));
+
+    let sarif = cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--diff-base",
+            "main",
+            "--threshold",
+            "10",
+            "--format",
+            "sarif",
+        ])
+        .output()
+        .unwrap();
+    assert!(sarif.status.success());
+    let sarif: Value = serde_json::from_slice(&sarif.stdout).unwrap();
+    assert_eq!(sarif["runs"][0]["results"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn includes_committed_staged_unstaged_and_untracked_work() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    write(&dir.path().join(".gitignore"), "ignored.py\n");
+    for name in ["committed", "staged", "unstaged", "unchanged", "excluded"] {
+        write(
+            &dir.path().join(format!("{name}.py")),
+            &format!("def {name}(x):\n    return x\n"),
+        );
+    }
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["checkout", "-b", "topic"]);
+
+    write(
+        &dir.path().join("committed.py"),
+        "def committed(x):\n    if x:\n        return x\n    return 0\n",
+    );
+    commit_all(dir.path(), "topic change");
+    write(
+        &dir.path().join("staged.py"),
+        "def staged(x):\n    if x:\n        return x\n    return 0\n",
+    );
+    git(dir.path(), &["add", "staged.py"]);
+    write(
+        &dir.path().join("unstaged.py"),
+        "def unstaged(x):\n    if x:\n        return x\n    return 0\n",
+    );
+    write(
+        &dir.path().join("untracked.py"),
+        "def untracked(x):\n    if x:\n        return x\n    return 0\n",
+    );
+    write(
+        &dir.path().join("space name.py"),
+        "def spaced(x):\n    if x:\n        return x\n    return 0\n",
+    );
+    write(
+        &dir.path().join("excluded.py"),
+        "def excluded(x):\n    if x:\n        return x\n    return 0\n",
+    );
+    write(
+        &dir.path().join("ignored.py"),
+        "def ignored(x):\n    if x:\n        return x\n    return 0\n",
+    );
+
+    let coverage = dir.path().join("coverage.lcov");
+    let mut lcov = String::new();
+    for name in [
+        "committed",
+        "staged",
+        "unstaged",
+        "untracked",
+        "unchanged",
+        "excluded",
+    ] {
+        lcov.push_str(&format!(
+            "SF:{}\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,1\nend_of_record\n",
+            dir.path().join(format!("{name}.py")).display()
+        ));
+    }
+    lcov.push_str(&format!(
+        "SF:{}\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,1\nend_of_record\n",
+        dir.path().join("space name.py").display()
+    ));
+    write(&coverage, &lcov);
+
+    let report = json_report(
+        dir.path(),
+        &[
+            "--coverage",
+            coverage.to_str().unwrap(),
+            "--exclude",
+            "excluded.py",
+        ],
+    );
+    let mut found = symbols(&report);
+    found.sort_unstable();
+    assert_eq!(
+        found,
+        ["committed", "spaced", "staged", "unstaged", "untracked"]
+    );
+    assert_eq!(report["diagnostics"]["coverage_files"], 5);
+    assert_eq!(report["diagnostics"]["matched_files"], 5);
+    assert_eq!(report["diagnostics"]["coverage_only_count"], 0);
+}
+
+#[test]
+fn uses_the_merge_base_instead_of_the_tip_of_main() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    write(
+        &dir.path().join("main_only.py"),
+        "def main_only(x):\n    return x\n",
+    );
+    write(
+        &dir.path().join("topic.py"),
+        "def topic(x):\n    return x\n",
+    );
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["branch", "topic"]);
+
+    write(
+        &dir.path().join("main_only.py"),
+        "def main_only(x):\n    if x:\n        return x\n    return 0\n",
+    );
+    commit_all(dir.path(), "main change");
+    git(dir.path(), &["checkout", "topic"]);
+    write(
+        &dir.path().join("topic.py"),
+        "def topic(x):\n    if x:\n        return x\n    return 0\n",
+    );
+
+    let report = json_report(dir.path(), &[]);
+    assert_eq!(symbols(&report), ["topic"]);
+}
+
+#[test]
+fn handles_renames_deletions_and_binary_files() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    write(
+        &dir.path().join("rename.py"),
+        "def renamed(x):\n    return x\n",
+    );
+    write(&dir.path().join("pure.py"), "def pure(x):\n    return x\n");
+    write(
+        &dir.path().join("deleted.py"),
+        "def deleted(x):\n    return x\n",
+    );
+    write(
+        &dir.path().join("trimmed.py"),
+        "def trimmed(x):\n    if x:\n        return x\n    return 0\n",
+    );
+    fs::write(dir.path().join("binary.py"), b"def binary():\0one\n").unwrap();
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["checkout", "-b", "topic"]);
+
+    git(dir.path(), &["mv", "rename.py", "renamed.py"]);
+    write(
+        &dir.path().join("renamed.py"),
+        "def renamed(x):\n    if x:\n        return x\n    return 0\n",
+    );
+    git(dir.path(), &["mv", "pure.py", "moved.py"]);
+    git(dir.path(), &["rm", "deleted.py"]);
+    write(
+        &dir.path().join("trimmed.py"),
+        "def trimmed(x):\n    return 0\n",
+    );
+    fs::write(dir.path().join("binary.py"), b"def binary():\0two\n").unwrap();
+
+    let report = json_report(dir.path(), &[]);
+    let mut found = symbols(&report);
+    found.sort_unstable();
+    assert_eq!(found, ["renamed", "trimmed"]);
+}
+
+#[test]
+fn limits_git_changes_to_path_and_reports_changed_terraform_blocks() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    write(
+        &dir.path().join("infra/main.tf"),
+        "resource \"test_item\" \"changed\" { count = 1 }\nresource \"test_item\" \"same\" { count = 1 }\n",
+    );
+    write(
+        &dir.path().join("other/app.py"),
+        "def outside(x):\n    return x\n",
+    );
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["checkout", "-b", "topic"]);
+    write(
+        &dir.path().join("infra/main.tf"),
+        "resource \"test_item\" \"changed\" { count = var.on ? 1 : 0 }\nresource \"test_item\" \"same\" { count = 1 }\n",
+    );
+    write(
+        &dir.path().join("other/app.py"),
+        "def outside(x):\n    if x:\n        return x\n    return 0\n",
+    );
+
+    let report = json_report(&dir.path().join("infra"), &[]);
+    let entries = report["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["metric"], "complexity");
+    assert!(entries[0]["symbol"].as_str().unwrap().contains("changed"));
+}
+
+#[test]
+fn rejects_invalid_git_inputs_and_baseline_pairs() {
+    let plain = tempfile::tempdir().unwrap();
+    write(&plain.path().join("app.py"), "def app(x):\n    return x\n");
+    cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            plain.path().to_str().unwrap(),
+            "--diff-base",
+            "main",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("not in a Git repository"));
+
+    let repo = tempfile::tempdir().unwrap();
+    init(repo.path());
+    write(&repo.path().join("app.py"), "def app(x):\n    return x\n");
+    commit_all(repo.path(), "base");
+    cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            repo.path().to_str().unwrap(),
+            "--diff-base",
+            "missing",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("invalid Git diff base 'missing'"));
+
+    cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            repo.path().to_str().unwrap(),
+            "--diff-base",
+            "main",
+            "--baseline",
+            "baseline.json",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "cannot be used with '--baseline <FILE>'",
+        ));
+
+    write(
+        &repo.path().join(".poly-crap.toml"),
+        "fail-regression = true\n",
+    );
+    cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            repo.path().to_str().unwrap(),
+            "--diff-base",
+            "main",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "--diff-base cannot be combined with fail-regression",
+        ));
+}
