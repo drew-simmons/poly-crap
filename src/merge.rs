@@ -11,12 +11,22 @@ pub struct MergeResult {
     pub diagnostics: ScopeDiagnostics,
 }
 
+/// Which coverage files the scope diagnostics should account for.
+///
+/// Matching always runs against the whole coverage map so that an ambiguous
+/// path suffix stays ambiguous; only the reported scope narrows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoverageScope {
+    All,
+    Matched,
+}
+
 pub fn merge(
     analysis: Analysis,
     coverage: &CoverageMap,
     policy: MissingCoveragePolicy,
 ) -> MergeResult {
-    merge_inner(analysis, coverage, policy)
+    merge_inner(analysis, coverage, policy, CoverageScope::All)
 }
 
 pub fn merge_selected(
@@ -24,14 +34,14 @@ pub fn merge_selected(
     coverage: &CoverageMap,
     policy: MissingCoveragePolicy,
 ) -> MergeResult {
-    let scoped = scoped_coverage(&analysis, coverage);
-    merge_inner(analysis, &scoped, policy)
+    merge_inner(analysis, coverage, policy, CoverageScope::Matched)
 }
 
 fn merge_inner(
     mut analysis: Analysis,
     coverage: &CoverageMap,
     policy: MissingCoveragePolicy,
+    scope: CoverageScope,
 ) -> MergeResult {
     let has_coverage = !coverage.is_empty();
     let warning_count = analysis.diagnostics.len();
@@ -71,12 +81,13 @@ fn merge_inner(
         &used_coverage,
         coverage,
         &entries,
+        scope,
     );
     MergeResult {
         entries,
         diagnostics: scope_diagnostics(
             &analysis,
-            coverage,
+            coverage_files(coverage, &used_coverage, scope),
             &analyzed_files,
             &matched_sources,
             source_only,
@@ -86,13 +97,17 @@ fn merge_inner(
     }
 }
 
-fn scoped_coverage(analysis: &Analysis, coverage: &CoverageMap) -> CoverageMap {
-    analysis
-        .units
-        .iter()
-        .filter_map(|unit| lookup_coverage(&unit.file, coverage))
-        .map(|(path, file)| (path.clone(), file.clone()))
-        .collect()
+/// Coverage files in scope: every parsed file normally, and only the files the
+/// selected sources matched when the run analysed a subset of the tree.
+fn coverage_files(
+    coverage: &CoverageMap,
+    used_coverage: &HashSet<PathBuf>,
+    scope: CoverageScope,
+) -> usize {
+    match scope {
+        CoverageScope::All => coverage.len(),
+        CoverageScope::Matched => used_coverage.len(),
+    }
 }
 
 fn program_entry(
@@ -161,6 +176,7 @@ fn scope_mismatches(
     used_coverage: &HashSet<PathBuf>,
     coverage: &CoverageMap,
     entries: &[Entry],
+    scope: CoverageScope,
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let source_only = if has_coverage {
         analyzed_files
@@ -173,17 +189,21 @@ fn scope_mismatches(
     } else {
         Vec::new()
     };
-    let coverage_only = coverage
-        .keys()
-        .filter(|path| !used_coverage.contains(*path))
-        .cloned()
-        .collect();
+    let coverage_only = if scope == CoverageScope::Matched {
+        Vec::new()
+    } else {
+        coverage
+            .keys()
+            .filter(|path| !used_coverage.contains(*path))
+            .cloned()
+            .collect()
+    };
     (source_only, coverage_only)
 }
 
 fn scope_diagnostics(
     analysis: &Analysis,
-    coverage: &CoverageMap,
+    coverage_files: usize,
     analyzed_files: &HashSet<PathBuf>,
     matched_sources: &HashSet<PathBuf>,
     mut source_only: Vec<PathBuf>,
@@ -201,7 +221,7 @@ fn scope_diagnostics(
         candidate_files: analysis.candidate_files,
         parsed_files: analysis.parsed_files,
         analyzed_files: analyzed_files.len(),
-        coverage_files: coverage.len(),
+        coverage_files,
         matched_files: matched_sources.len(),
         source_only_count,
         coverage_only_count,
@@ -328,6 +348,67 @@ mod tests {
         assert_eq!(result.entries[0].coverage, Some(50.0));
         assert_eq!(result.entries[0].score, 6.0);
         assert_eq!(result.diagnostics.matched_files, 1);
+    }
+
+    #[test]
+    fn selected_runs_keep_ambiguous_coverage_unmatched() {
+        // Two coverage files tie on the `util.py` suffix, so neither is a
+        // safe match. Narrowing the map for a selected run must not turn that
+        // tie into a unique match against the wrong file.
+        let mut coverage = HashMap::new();
+        for name in ["x/util.py", "y/util.py"] {
+            coverage.insert(
+                PathBuf::from(name),
+                FileCoverage {
+                    basis: CoverageBasis::Line,
+                    regions: vec![CoverageRegion {
+                        start_line: 1,
+                        end_line: 1,
+                        units: 1,
+                        covered: true,
+                    }],
+                },
+            );
+        }
+        // `a/util.py` ties between both coverage files. `x/util.py` matches
+        // one of them outright, which is what puts that file into the scoped
+        // map and lets the tie resolve against the wrong source.
+        let mut analysis = analysis();
+        analysis.units[0].file = PathBuf::from("a/util.py");
+        let mut sibling = analysis.units[0].clone();
+        sibling.file = PathBuf::from("x/util.py");
+        analysis.units.push(sibling);
+
+        let full = merge(
+            clone_analysis(&analysis),
+            &coverage,
+            MissingCoveragePolicy::Pessimistic,
+        );
+        let selected = merge_selected(analysis, &coverage, MissingCoveragePolicy::Pessimistic);
+        assert_eq!(ambiguous_coverage(&full), None);
+        assert_eq!(
+            ambiguous_coverage(&selected),
+            None,
+            "selected run borrowed another file's coverage"
+        );
+    }
+
+    fn ambiguous_coverage(result: &MergeResult) -> Option<f64> {
+        result
+            .entries
+            .iter()
+            .find(|entry| entry.file == PathBuf::from("a/util.py"))
+            .expect("ambiguous entry is present")
+            .coverage
+    }
+
+    fn clone_analysis(analysis: &Analysis) -> Analysis {
+        Analysis {
+            units: analysis.units.clone(),
+            candidate_files: analysis.candidate_files,
+            parsed_files: analysis.parsed_files,
+            diagnostics: analysis.diagnostics.clone(),
+        }
     }
 
     #[test]
