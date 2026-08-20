@@ -424,9 +424,25 @@ fn pathspec(relative_root: &Path) -> PathBuf {
     }
 }
 
+/// Environment variables that would override `-C <directory>`.
+///
+/// Git hooks and `git bisect run` set these, so an inherited value would
+/// resolve revisions against a different repository than the one being
+/// analysed, silently reporting a diff against an unrelated tree.
+const OVERRIDING_GIT_VARIABLES: [&str; 5] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+];
+
 fn git_command(directory: &Path) -> Command {
     let mut command = Command::new("git");
     command.arg("-C").arg(directory);
+    for variable in OVERRIDING_GIT_VARIABLES {
+        command.env_remove(variable);
+    }
     command
 }
 
