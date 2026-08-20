@@ -14,7 +14,7 @@ Poly-crap uses the Change Risk Anti-Patterns metric:
 CRAP(m) = complexity(m)² × (1 - coverage(m) / 100)³ + complexity(m)
 ```
 
-The default threshold is `30`. A high score points to code that needs simpler
+The default threshold is `5`. A high score points to code that needs simpler
 control flow, more useful tests, or both.
 
 ## Install
