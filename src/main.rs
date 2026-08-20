@@ -158,7 +158,7 @@ fn collect_entries(cli: &Cli, config: &EffectiveConfig) -> Result<Collected> {
     let (analysis, diff) = analyze_sources(cli, config)?;
     warn_diagnostics(&analysis);
     let merged = merge_sources(analysis, config, diff.is_some())?;
-    let entries = filter_entries(merged.entries, config)?;
+    let entries = filter_entries(merged.entries, &cli.path, config)?;
     Ok(Collected {
         entries,
         diagnostics: merged.diagnostics,
@@ -306,8 +306,19 @@ fn warn_coverage_scope(merged: &poly_crap::MergeResult) {
     }
 }
 
-fn filter_entries(entries: Vec<Entry>, config: &EffectiveConfig) -> Result<Vec<Entry>> {
-    report::filter_entries(entries, &config.allow, config.min, config.top, config.sort)
+fn filter_entries(
+    entries: Vec<Entry>,
+    root: &std::path::Path,
+    config: &EffectiveConfig,
+) -> Result<Vec<Entry>> {
+    report::filter_entries(
+        entries,
+        &config.allow,
+        root,
+        config.min,
+        config.top,
+        config.sort,
+    )
 }
 
 fn render_report(
@@ -316,7 +327,13 @@ fn render_report(
     collected: Collected,
 ) -> Result<(String, bool)> {
     if let Some(path) = &cli.baseline {
-        render_delta_report(path, config, collected.entries, collected.diagnostics)
+        render_delta_report(
+            path,
+            &cli.path,
+            config,
+            collected.entries,
+            collected.diagnostics,
+        )
     } else {
         render_absolute_report(cli, config, collected)
     }
@@ -324,11 +341,12 @@ fn render_report(
 
 fn render_delta_report(
     path: &std::path::Path,
+    root: &std::path::Path,
     config: &EffectiveConfig,
     entries: Vec<Entry>,
     diagnostics: ScopeDiagnostics,
 ) -> Result<(String, bool)> {
-    let baseline_entries = filter_entries(baseline::load(path)?, config)?;
+    let baseline_entries = report::filter_allowed(baseline::load(path)?, &config.allow, root)?;
     let delta = baseline::compare(entries, &baseline_entries, config.epsilon, diagnostics);
     let failed = config.fail_regression && report::regression_failed(&delta);
     let rendered = report::render_delta(&delta, config.format, config.summary)?;
