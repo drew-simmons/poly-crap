@@ -12,12 +12,6 @@ pub struct GitDiff {
     pub files: BTreeMap<PathBuf, Vec<LineRange>>,
 }
 
-#[derive(Debug)]
-struct TrackedChange {
-    old_path: Option<PathBuf>,
-    current_path: PathBuf,
-}
-
 impl GitDiff {
     pub fn selected_paths(&self) -> Vec<PathBuf> {
         self.files
@@ -94,34 +88,136 @@ fn collect_changed_files(
     merge_base: &str,
     relative_root: &Path,
 ) -> Result<BTreeMap<PathBuf, Vec<LineRange>>> {
-    let tracked = tracked_changes(repository, merge_base, relative_root)?;
-    let mut files = tracked
-        .into_iter()
-        .map(|change| tracked_file(repository, merge_base, relative_root, &change))
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
-        .collect();
+    let mut files = tracked_ranges(repository, merge_base, relative_root)?;
     for path in untracked_files(repository, relative_root)? {
         add_untracked_file(&mut files, repository, relative_root, &path);
     }
     Ok(files)
 }
 
-fn tracked_file(
+/// Changed line ranges for every tracked file, from a single `git diff`.
+///
+/// A patch names the file each hunk belongs to, so one invocation covers the
+/// whole scan path instead of one process per changed file.
+fn tracked_ranges(
     repository: &Path,
     merge_base: &str,
     relative_root: &Path,
-    change: &TrackedChange,
-) -> Result<Option<(PathBuf, Vec<LineRange>)>> {
-    let Some(relative) = scan_relative(&change.current_path, relative_root) else {
-        return Ok(None);
-    };
-    if !repository.join(&change.current_path).is_file() {
+) -> Result<BTreeMap<PathBuf, Vec<LineRange>>> {
+    let pathspec = pathspec(relative_root);
+    let output = run_git(
+        repository,
+        [
+            // Keep non-ASCII paths as raw bytes rather than C-style escapes.
+            OsStr::new("-c"),
+            OsStr::new("core.quotePath=false"),
+            OsStr::new("diff"),
+            OsStr::new("--unified=0"),
+            OsStr::new("--find-renames"),
+            OsStr::new("--no-ext-diff"),
+            OsStr::new("--no-color"),
+            OsStr::new(merge_base),
+            OsStr::new("--"),
+            pathspec.as_os_str(),
+        ],
+    )?;
+    if !output.status.success() {
+        bail!("reading Git diff: {}", stderr(&output));
+    }
+    Ok(parse_patch(&output.stdout)?
+        .into_iter()
+        .filter(|(path, _)| repository.join(path).is_file())
+        .filter_map(|(path, ranges)| Some((scan_relative(&path, relative_root)?, ranges)))
+        .collect())
+}
+
+/// Position within one file's patch.
+///
+/// Under `--unified=0` every content line carries a `+` or `-` prefix, so a
+/// file whose own contents look like a patch would otherwise have its
+/// `+++ b/...` lines read as headers. Following the `diff --git`, `---`, `+++`
+/// sequence keeps header lines and content lines apart.
+#[derive(Debug, Clone, Copy, Default)]
+enum PatchState {
+    AwaitingOldPath,
+    AwaitingNewPath,
+    #[default]
+    ReadingHunks,
+}
+
+#[derive(Debug, Default)]
+struct PatchReader {
+    files: BTreeMap<PathBuf, Vec<LineRange>>,
+    current: Option<PathBuf>,
+}
+
+impl PatchReader {
+    fn read_line(&mut self, state: PatchState, line: &[u8]) -> Result<PatchState> {
+        if line.starts_with(b"diff --git ") {
+            self.current = None;
+            return Ok(PatchState::AwaitingOldPath);
+        }
+        self.read_body(state, line)
+    }
+
+    fn read_body(&mut self, state: PatchState, line: &[u8]) -> Result<PatchState> {
+        match state {
+            PatchState::AwaitingOldPath => Ok(await_old_path(line)),
+            PatchState::AwaitingNewPath => self.read_new_path(line),
+            PatchState::ReadingHunks => self.read_hunk(line).map(|()| state),
+        }
+    }
+
+    fn read_new_path(&mut self, line: &[u8]) -> Result<PatchState> {
+        if !line.starts_with(b"+++ ") {
+            return Ok(PatchState::AwaitingNewPath);
+        }
+        self.current = patch_path(&line[4..])?;
+        Ok(PatchState::ReadingHunks)
+    }
+
+    fn read_hunk(&mut self, line: &[u8]) -> Result<()> {
+        let Some(path) = self.current.clone() else {
+            return Ok(());
+        };
+        if line.starts_with(b"@@ ") {
+            self.files.entry(path).or_default().push(parse_hunk(line)?);
+        }
+        Ok(())
+    }
+}
+
+fn await_old_path(line: &[u8]) -> PatchState {
+    if line.starts_with(b"--- ") {
+        return PatchState::AwaitingNewPath;
+    }
+    PatchState::AwaitingOldPath
+}
+
+fn parse_patch(raw: &[u8]) -> Result<BTreeMap<PathBuf, Vec<LineRange>>> {
+    let mut reader = PatchReader::default();
+    let mut state = PatchState::default();
+    for line in raw.split(|byte| *byte == b'\n') {
+        state = reader.read_line(state, strip_carriage_return(line))?;
+    }
+    Ok(reader.files)
+}
+
+/// Path from a `+++` header, or `None` when there is no post-image to scan.
+///
+/// A deleted file reads `/dev/null`. A path holding a control character stays
+/// quoted even with `core.quotePath=false`; such a file is skipped rather than
+/// guessed at, so it simply does not enter the changed set.
+fn patch_path(raw: &[u8]) -> Result<Option<PathBuf>> {
+    if raw == b"/dev/null" || raw.starts_with(b"\"") {
         return Ok(None);
     }
-    let ranges = changed_ranges(repository, merge_base, change)?;
-    Ok(Some((relative, ranges)))
+    let trimmed = raw.strip_prefix(b"b/").unwrap_or(raw);
+    path_from_bytes(trimmed).map(Some)
+}
+
+fn strip_carriage_return(line: &[u8]) -> &[u8] {
+    line.strip_suffix(b"\r").unwrap_or(line)
 }
 
 fn add_untracked_file(
@@ -186,161 +282,6 @@ fn resolve_merge_base(repository: &Path, base_commit: &str) -> Result<String> {
         bail!("finding Git merge base: {}", stderr(&output));
     }
     ascii_output(&output.stdout, "Git merge base")
-}
-
-fn tracked_changes(
-    repository: &Path,
-    merge_base: &str,
-    relative_root: &Path,
-) -> Result<Vec<TrackedChange>> {
-    let pathspec = pathspec(relative_root);
-    let output = run_git(
-        repository,
-        [
-            OsStr::new("diff"),
-            OsStr::new("--name-status"),
-            OsStr::new("-z"),
-            OsStr::new("--find-renames"),
-            OsStr::new("--no-ext-diff"),
-            OsStr::new("--no-color"),
-            OsStr::new(merge_base),
-            OsStr::new("--"),
-            pathspec.as_os_str(),
-        ],
-    )?;
-    if !output.status.success() {
-        bail!("reading Git changed files: {}", stderr(&output));
-    }
-    parse_name_status(&output.stdout)
-}
-
-fn parse_name_status(raw: &[u8]) -> Result<Vec<TrackedChange>> {
-    let fields: Vec<_> = raw
-        .split(|byte| *byte == 0)
-        .filter(|field| !field.is_empty())
-        .collect();
-    let mut changes = Vec::new();
-    let mut index = 0;
-    while index < fields.len() {
-        changes.extend(parse_name_status_entry(&fields, &mut index)?);
-    }
-    Ok(changes)
-}
-
-fn parse_name_status_entry(fields: &[&[u8]], index: &mut usize) -> Result<Option<TrackedChange>> {
-    let status = next_status_field(fields, index)?;
-    if is_rename_or_copy(status) {
-        parse_renamed_change(fields, index, status).map(Some)
-    } else {
-        parse_single_change(fields, index, status)
-    }
-}
-
-fn next_status_field<'a>(fields: &'a [&[u8]], index: &mut usize) -> Result<&'a str> {
-    let raw = next_field(fields, index, "Git omitted a change status")?;
-    std::str::from_utf8(raw).context("reading Git change status")
-}
-
-fn next_field<'a>(fields: &'a [&[u8]], index: &mut usize, message: &str) -> Result<&'a [u8]> {
-    let field = fields
-        .get(*index)
-        .ok_or_else(|| anyhow!(message.to_owned()))?;
-    *index += 1;
-    Ok(field)
-}
-
-fn is_rename_or_copy(status: &str) -> bool {
-    status.starts_with('R') || status.starts_with('C')
-}
-
-fn parse_renamed_change(
-    fields: &[&[u8]],
-    index: &mut usize,
-    status: &str,
-) -> Result<TrackedChange> {
-    let (old, current) = renamed_paths(fields, index, status)?;
-    change_from_paths(old, current)
-}
-
-fn renamed_paths<'a>(
-    fields: &'a [&[u8]],
-    index: &mut usize,
-    status: &str,
-) -> Result<(&'a [u8], &'a [u8])> {
-    let old = next_field(
-        fields,
-        index,
-        &format!("Git omitted the old path for status {status}"),
-    )?;
-    let current = next_field(
-        fields,
-        index,
-        &format!("Git omitted the new path for status {status}"),
-    )?;
-    Ok((old, current))
-}
-
-fn change_from_paths(old: &[u8], current: &[u8]) -> Result<TrackedChange> {
-    Ok(TrackedChange {
-        old_path: Some(path_from_bytes(old)?),
-        current_path: path_from_bytes(current)?,
-    })
-}
-
-fn parse_single_change(
-    fields: &[&[u8]],
-    index: &mut usize,
-    status: &str,
-) -> Result<Option<TrackedChange>> {
-    let path = next_field(
-        fields,
-        index,
-        &format!("Git omitted the path for status {status}"),
-    )?;
-    if status.starts_with('D') {
-        return Ok(None);
-    }
-    Ok(Some(TrackedChange {
-        old_path: None,
-        current_path: path_from_bytes(path)?,
-    }))
-}
-
-fn changed_ranges(
-    repository: &Path,
-    merge_base: &str,
-    change: &TrackedChange,
-) -> Result<Vec<LineRange>> {
-    let mut command = git_command(repository);
-    command.args([
-        "diff",
-        "--unified=0",
-        "--find-renames",
-        "--no-ext-diff",
-        "--no-color",
-        merge_base,
-        "--",
-    ]);
-    if let Some(old) = &change.old_path {
-        command.arg(old);
-    }
-    command.arg(&change.current_path);
-    let output = run_command(command)?;
-    if !output.status.success() {
-        bail!(
-            "reading Git diff for {}: {}",
-            change.current_path.display(),
-            stderr(&output)
-        );
-    }
-    parse_hunks(&output.stdout)
-}
-
-fn parse_hunks(raw: &[u8]) -> Result<Vec<LineRange>> {
-    raw.split(|byte| *byte == b'\n')
-        .filter(|line| line.starts_with(b"@@ "))
-        .map(parse_hunk)
-        .collect()
 }
 
 fn parse_hunk(line: &[u8]) -> Result<LineRange> {
@@ -424,9 +365,25 @@ fn pathspec(relative_root: &Path) -> PathBuf {
     }
 }
 
+/// Environment variables that would override `-C <directory>`.
+///
+/// Git hooks and `git bisect run` set these, so an inherited value would
+/// resolve revisions against a different repository than the one being
+/// analysed, silently reporting a diff against an unrelated tree.
+const OVERRIDING_GIT_VARIABLES: [&str; 5] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+];
+
 fn git_command(directory: &Path) -> Command {
     let mut command = Command::new("git");
     command.arg("-C").arg(directory);
+    for variable in OVERRIDING_GIT_VARIABLES {
+        command.env_remove(variable);
+    }
     command
 }
 
@@ -485,20 +442,68 @@ fn path_from_bytes(raw: &[u8]) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_current_hunk_ranges_and_deletion_anchors() {
-        let ranges = parse_hunks(b"@@ -1,2 +1,3 @@\n@@ -10,4 +11,0 @@\n").unwrap();
-        assert_eq!(ranges[0], LineRange { start: 1, end: 3 });
-        assert_eq!(ranges[1], LineRange { start: 11, end: 11 });
+    fn ranges(patch: &[u8], path: &str) -> Vec<LineRange> {
+        parse_patch(patch)
+            .unwrap()
+            .remove(&PathBuf::from(path))
+            .unwrap_or_default()
     }
 
     #[test]
-    fn parses_rename_status() {
-        let changes =
-            parse_name_status(b"R100\0old name.py\0new name.py\0M\0src/lib.rs\0").unwrap();
-        assert_eq!(changes.len(), 2);
-        assert_eq!(changes[0].old_path, Some(PathBuf::from("old name.py")));
-        assert_eq!(changes[0].current_path, PathBuf::from("new name.py"));
-        assert_eq!(changes[1].current_path, PathBuf::from("src/lib.rs"));
+    fn parses_current_hunk_ranges_and_deletion_anchors() {
+        let patch = b"diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,3 @@\n@@ -10,4 +11,0 @@\n";
+        let found = ranges(patch, "a.py");
+        assert_eq!(found[0], LineRange { start: 1, end: 3 });
+        assert_eq!(found[1], LineRange { start: 11, end: 11 });
+    }
+
+    #[test]
+    fn splits_hunks_across_files_and_keeps_renamed_paths() {
+        let patch = b"diff --git a/old name.py b/new name.py\nsimilarity index 80%\nrename from old name.py\nrename to new name.py\n--- a/old name.py\n+++ b/new name.py\n@@ -1 +1,2 @@\ndiff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -7 +9,3 @@\n";
+        let parsed = parse_patch(patch).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(
+            parsed[&PathBuf::from("new name.py")],
+            vec![LineRange { start: 1, end: 2 }]
+        );
+        assert_eq!(
+            parsed[&PathBuf::from("src/lib.rs")],
+            vec![LineRange { start: 9, end: 11 }]
+        );
+    }
+
+    #[test]
+    fn ignores_patch_syntax_inside_changed_content() {
+        // A file that itself contains a patch. Its added lines start with
+        // `+++`/`@@` once prefixed, and must not be read as file headers.
+        let patch = b"diff --git a/notes.py b/notes.py\n--- a/notes.py\n+++ b/notes.py\n@@ -1 +1,4 @@\n+diff --git a/evil.py b/evil.py\n+--- a/evil.py\n++++ b/evil.py\n+@@ -1 +900,5 @@\n";
+        let parsed = parse_patch(patch).unwrap();
+        assert_eq!(parsed.len(), 1, "content was parsed as a second file");
+        assert_eq!(
+            parsed[&PathBuf::from("notes.py")],
+            vec![LineRange { start: 1, end: 4 }]
+        );
+    }
+
+    #[test]
+    fn waits_for_the_new_path_header() {
+        // Git puts `+++` straight after `---`. Anything else leaves the reader
+        // waiting rather than taking the line as a path.
+        let patch =
+            b"diff --git a/a.py b/a.py\n--- a/a.py\nunexpected\n+++ b/a.py\n@@ -1 +1,2 @@\n";
+        assert_eq!(
+            parse_patch(patch).unwrap()[&PathBuf::from("a.py")],
+            vec![LineRange { start: 1, end: 2 }]
+        );
+    }
+
+    #[test]
+    fn skips_deleted_files_and_unreadable_paths() {
+        let deleted =
+            b"diff --git a/gone.py b/gone.py\n--- a/gone.py\n+++ /dev/null\n@@ -1,3 +0,0 @@\n";
+        assert!(parse_patch(deleted).unwrap().is_empty());
+
+        let quoted = b"diff --git \"a/od\\ny\" \"b/od\\ny\"\n--- \"a/od\\ny\"\n+++ \"b/od\\ny\"\n@@ -1 +1,2 @@\n";
+        assert!(parse_patch(quoted).unwrap().is_empty());
     }
 }

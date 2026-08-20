@@ -6,6 +6,7 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::io::Write;
+use std::path::Path;
 
 const REPORT_SCHEMA: &str =
     "https://raw.githubusercontent.com/drew-simmons/poly-crap/main/schemas/report-v1.json";
@@ -49,21 +50,54 @@ struct DeltaEnvelope<'a> {
 }
 
 pub fn filter_entries(
-    mut entries: Vec<Entry>,
+    entries: Vec<Entry>,
     allow: &[String],
+    root: &Path,
     min: Option<f64>,
     top: Option<usize>,
     sort: SortOrder,
 ) -> Result<Vec<Entry>> {
-    let (names, paths) = build_allow_sets(allow)?;
-    entries.retain(|entry| {
-        !names.is_match(&entry.symbol)
-            && !paths.is_match(entry.file.to_string_lossy().replace('\\', "/"))
-            && min.is_none_or(|minimum| entry.score >= minimum)
-    });
+    let mut entries = filter_allowed(entries, allow, root)?;
+    entries.retain(|entry| min.is_none_or(|minimum| entry.score >= minimum));
     apply_top(&mut entries, top);
     sort_entries(&mut entries, sort);
     Ok(entries)
+}
+
+/// Drop entries suppressed by `--allow`, leaving the display limits alone.
+///
+/// Baseline comparisons use this on its own. `--min` and `--top` decide what
+/// gets printed; applying them to the baseline would strip the very rows a
+/// regressed function has to match against, so it would be reported as new
+/// and slip past `--fail-regression`.
+pub fn filter_allowed(
+    mut entries: Vec<Entry>,
+    allow: &[String],
+    root: &Path,
+) -> Result<Vec<Entry>> {
+    let (names, paths) = build_allow_sets(allow)?;
+    entries
+        .retain(|entry| !names.is_match(&entry.symbol) && !matches_path(&paths, &entry.file, root));
+    Ok(entries)
+}
+
+/// Match an allow glob against the reported path and its root-relative form.
+///
+/// Reported paths keep the `--path` prefix, so they read as `./src/a.rs` by
+/// default or as an absolute path. A documented pattern such as `vendor/**`
+/// only lines up once the analysis root is stripped, which is what `--exclude`
+/// already matches against. Both forms are tried so patterns written for
+/// either shape keep working.
+fn matches_path(paths: &GlobSet, file: &Path, root: &Path) -> bool {
+    if paths.is_match(normalize_path(file)) {
+        return true;
+    }
+    file.strip_prefix(root)
+        .is_ok_and(|relative| paths.is_match(normalize_path(relative)))
+}
+
+fn normalize_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn build_allow_sets(allow: &[String]) -> Result<(GlobSet, GlobSet)> {
@@ -317,7 +351,7 @@ fn render_sarif(entries: &[Entry], threshold: f64) -> Result<String> {
                 "level": "warning",
                 "message": {"text": format!("{} has CRAP {:.1} (CC {:.1}, coverage {})", entry.symbol, entry.score, entry.complexity, entry.coverage.map_or_else(|| "N/A".into(), |v| format!("{v:.1}%")))},
                 "locations": [{"physicalLocation": {
-                    "artifactLocation": {"uri": entry.file.to_string_lossy().replace('\\', "/")},
+                    "artifactLocation": {"uri": normalize_path(&entry.file)},
                     "region": {"startLine": entry.start_line, "endLine": entry.end_line}
                 }}]
             })
@@ -403,6 +437,7 @@ mod tests {
         let filtered = filter_entries(
             vec![entry(4.0), entry(3.0), entry(2.0)],
             &[],
+            Path::new("."),
             None,
             Some(2),
             SortOrder::Crap,
@@ -421,13 +456,48 @@ mod tests {
         let filtered = filter_entries(
             vec![entry(3.0), generated],
             &["run".into(), "generated/**".into()],
+            Path::new("."),
             None,
             None,
             SortOrder::Crap,
         )
         .unwrap();
         assert!(filtered.is_empty());
-        assert!(filter_entries(Vec::new(), &["[".into()], None, None, SortOrder::Crap).is_err());
+        assert!(
+            filter_entries(
+                Vec::new(),
+                &["[".into()],
+                Path::new("."),
+                None,
+                None,
+                SortOrder::Crap
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn allow_paths_match_the_reported_and_root_relative_forms() {
+        let prefixed = |file: &str| {
+            let mut value = entry(3.0);
+            value.file = PathBuf::from(file);
+            value.symbol = "keep".into();
+            value
+        };
+        // `--path .` reports `./vendor/a.rs`; `--path /repo` reports the
+        // absolute path. The documented `vendor/**` must suppress both.
+        for (root, file) in [(".", "./vendor/a.rs"), ("/repo", "/repo/vendor/a.rs")] {
+            let filtered = filter_entries(
+                vec![prefixed(file)],
+                &["vendor/**".into()],
+                Path::new(root),
+                None,
+                None,
+                SortOrder::Crap,
+            )
+            .unwrap();
+            assert!(filtered.is_empty(), "{file} survived under root {root}");
+        }
     }
 
     #[test]

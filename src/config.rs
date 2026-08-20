@@ -165,11 +165,23 @@ fn enabled(cli: bool, configured: Option<bool>) -> bool {
 }
 
 pub fn load(start: &Path) -> Result<Config> {
-    let path = config_start(start)
+    let path = search_root(start)
         .ancestors()
         .map(|directory| directory.join(".poly-crap.toml"))
         .find(|path| path.exists());
     path.map_or_else(|| Ok(Config::default()), |path| read_config(&path))
+}
+
+/// Absolute directory to search upward from.
+///
+/// `Path::ancestors` on a relative path such as the default `.` yields only
+/// that path and `""`, so the search must start from an absolute path for
+/// parent directories to be reached at all.
+fn search_root(start: &Path) -> PathBuf {
+    let directory = config_start(start);
+    directory
+        .canonicalize()
+        .unwrap_or_else(|_| directory.to_path_buf())
 }
 
 fn config_start(start: &Path) -> &Path {
