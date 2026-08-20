@@ -17,32 +17,21 @@ pub enum Language {
     Go,
     Rust,
     Java,
-    #[value(alias = "tf")]
-    Terraform,
 }
 
 impl Language {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 6] = [
         Self::JavaScript,
         Self::TypeScript,
         Self::Python,
         Self::Go,
         Self::Rust,
         Self::Java,
-        Self::Terraform,
     ];
 
-    const NAMES: [&'static str; 7] = [
-        "javascript",
-        "typescript",
-        "python",
-        "go",
-        "rust",
-        "java",
-        "terraform",
-    ];
+    const NAMES: [&'static str; 6] = ["javascript", "typescript", "python", "go", "rust", "java"];
 
-    const ALIASES: [(&'static str, Self); 12] = [
+    const ALIASES: [(&'static str, Self); 10] = [
         ("javascript", Self::JavaScript),
         ("js", Self::JavaScript),
         ("typescript", Self::TypeScript),
@@ -53,18 +42,15 @@ impl Language {
         ("rust", Self::Rust),
         ("rs", Self::Rust),
         ("java", Self::Java),
-        ("terraform", Self::Terraform),
-        ("tf", Self::Terraform),
     ];
 
-    const EXTENSIONS: [(&'static [&'static str], Self); 7] = [
+    const EXTENSIONS: [(&'static [&'static str], Self); 6] = [
         (&["js", "jsx", "mjs", "cjs"], Self::JavaScript),
         (&["ts", "tsx", "mts", "cts"], Self::TypeScript),
         (&["py"], Self::Python),
         (&["go"], Self::Go),
         (&["rs"], Self::Rust),
         (&["java"], Self::Java),
-        (&["tf"], Self::Terraform),
     ];
 
     #[must_use]
@@ -79,20 +65,11 @@ impl Language {
 
     #[must_use]
     pub fn from_path(path: &std::path::Path) -> Option<Self> {
-        if is_terraform_test(path) {
-            return None;
-        }
         let extension = path.extension().and_then(std::ffi::OsStr::to_str)?;
         Self::EXTENSIONS
             .iter()
             .find_map(|(extensions, language)| extensions.contains(&extension).then_some(*language))
     }
-}
-
-fn is_terraform_test(path: &std::path::Path) -> bool {
-    path.file_name()
-        .and_then(std::ffi::OsStr::to_str)
-        .is_some_and(|name| name.ends_with(".tftest.hcl"))
 }
 
 impl fmt::Display for Language {
@@ -118,13 +95,6 @@ impl FromStr for Language {
 pub enum CoverageBasis {
     Line,
     Statement,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MetricKind {
-    Crap,
-    Complexity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
@@ -181,11 +151,9 @@ pub struct Entry {
     pub symbol: String,
     pub start_line: usize,
     pub end_line: usize,
-    pub metric: MetricKind,
     pub complexity: f64,
     pub coverage: Option<f64>,
     pub coverage_basis: Option<CoverageBasis>,
-    pub crap: Option<f64>,
     pub score: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uncovered: Vec<LineRange>,
@@ -208,8 +176,6 @@ mod tests {
             ("rust", Language::Rust),
             ("rs", Language::Rust),
             ("java", Language::Java),
-            ("terraform", Language::Terraform),
-            ("tf", Language::Terraform),
         ];
 
         for (value, expected) in cases {
@@ -219,6 +185,10 @@ mod tests {
         assert_eq!(
             "ruby".parse::<Language>(),
             Err("unknown language: ruby".into())
+        );
+        assert_eq!(
+            "terraform".parse::<Language>(),
+            Err("unknown language: terraform".into())
         );
     }
 }

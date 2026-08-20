@@ -1,8 +1,6 @@
 use crate::analysis::Analysis;
 use crate::coverage::{CoverageMap, FileCoverage};
-use crate::model::{
-    CodeUnit, Entry, Language, MetricKind, MissingCoveragePolicy, ScopeDiagnostics,
-};
+use crate::model::{CodeUnit, Entry, MissingCoveragePolicy, ScopeDiagnostics};
 use crate::score::crap;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
@@ -49,7 +47,7 @@ fn merge_inner(
     let mut entries: Vec<_> = units
         .into_iter()
         .filter_map(|unit| {
-            merge_unit(
+            program_entry(
                 unit,
                 coverage,
                 policy,
@@ -92,40 +90,9 @@ fn scoped_coverage(analysis: &Analysis, coverage: &CoverageMap) -> CoverageMap {
     analysis
         .units
         .iter()
-        .filter(|unit| unit.language != Language::Terraform)
         .filter_map(|unit| lookup_coverage(&unit.file, coverage))
         .map(|(path, file)| (path.clone(), file.clone()))
         .collect()
-}
-
-fn merge_unit(
-    unit: CodeUnit,
-    coverage: &CoverageMap,
-    policy: MissingCoveragePolicy,
-    used_coverage: &mut HashSet<PathBuf>,
-    matched_sources: &mut HashSet<PathBuf>,
-) -> Option<Entry> {
-    if unit.language == Language::Terraform {
-        return Some(terraform_entry(unit));
-    }
-    program_entry(unit, coverage, policy, used_coverage, matched_sources)
-}
-
-fn terraform_entry(unit: CodeUnit) -> Entry {
-    Entry {
-        language: unit.language,
-        file: unit.file,
-        symbol: unit.symbol,
-        start_line: unit.start_line,
-        end_line: unit.end_line,
-        metric: MetricKind::Complexity,
-        complexity: unit.complexity,
-        coverage: None,
-        coverage_basis: None,
-        crap: None,
-        score: unit.complexity,
-        uncovered: Vec::new(),
-    }
 }
 
 fn program_entry(
@@ -150,11 +117,9 @@ fn program_entry(
         symbol: unit.symbol,
         start_line: unit.start_line,
         end_line: unit.end_line,
-        metric: MetricKind::Crap,
         complexity: unit.complexity,
         coverage: coverage_value,
         coverage_basis: measured.map(|(file, _)| file.basis),
-        crap: Some(crap_score),
         score: crap_score,
         uncovered: measured.map_or_else(Vec::new, |(file, _)| {
             file.uncovered_in_span(unit.start_line, unit.end_line)
@@ -201,10 +166,7 @@ fn scope_mismatches(
         analyzed_files
             .iter()
             .filter(|path| {
-                !matched_sources.contains(*path)
-                    && entries
-                        .iter()
-                        .any(|entry| entry.file == **path && entry.metric == MetricKind::Crap)
+                !matched_sources.contains(*path) && entries.iter().any(|entry| entry.file == **path)
             })
             .cloned()
             .collect()
@@ -364,7 +326,7 @@ mod tests {
         );
         let result = merge(analysis(), &coverage, MissingCoveragePolicy::Pessimistic);
         assert_eq!(result.entries[0].coverage, Some(50.0));
-        assert_eq!(result.entries[0].crap, Some(6.0));
+        assert_eq!(result.entries[0].score, 6.0);
         assert_eq!(result.diagnostics.matched_files, 1);
     }
 

@@ -27,6 +27,7 @@ fn mixed_language_json_matches_schema() {
         &dir.path().join("main.tf"),
         "resource \"test_item\" \"main\" { count = var.on ? 1 : 0 }\n",
     );
+    write(&dir.path().join("infra.hcl"), "block \"x\" {}\n");
     let coverage = dir.path().join("coverage.lcov");
     write(
         &coverage,
@@ -64,15 +65,11 @@ fn mixed_language_json_matches_schema() {
         .collect();
     assert!(languages.contains(&"rust"));
     assert!(languages.contains(&"typescript"), "{report}");
-    assert!(languages.contains(&"terraform"));
-    let terraform = report["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|entry| entry["language"] == "terraform")
-        .unwrap();
-    assert!(terraform["crap"].is_null());
-    assert_eq!(terraform["metric"], "complexity");
+    assert!(
+        !languages.contains(&"terraform"),
+        "Terraform is no longer scanned: {report}"
+    );
+    assert_eq!(report["entries"].as_array().unwrap().len(), 2);
 
     let schema: Value = serde_json::from_str(include_str!("../schemas/report-v1.json")).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();

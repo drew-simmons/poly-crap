@@ -6,7 +6,7 @@
 
 Find functions that combine high complexity with low test coverage across a
 polyglot codebase. Poly-crap supports TypeScript, JavaScript, Python, Go, Rust,
-and Java. It also reports a separate complexity score for Terraform blocks.
+and Java.
 
 Poly-crap uses the Change Risk Anti-Patterns metric:
 
@@ -60,7 +60,7 @@ poly-crap --path . --coverage jacoco.xml --format sarif --output poly-crap.sarif
 
 Poly-crap detects LCOV, Go cover profiles, and JaCoCo XML from their contents.
 Pass `--coverage` more than once to merge reports. The tool reads reports but
-does not run tests, builds, Terraform, or report converters.
+does not run tests, builds, or report converters.
 
 ### Create coverage reports
 
@@ -112,14 +112,14 @@ repeatable language flag:
 poly-crap --language ts --language py --coverage coverage.lcov
 ```
 
-Accepted short names include `js`, `ts`, `py`, and `tf`. The scanner respects
+Accepted short names include `js`, `ts`, and `py`. The scanner respects
 `.gitignore` and skips common dependency, build, generated, and test paths.
 Use `--exclude`, `--allow`, or `--no-default-excludes` to change the scope.
 
 ### Git diff checks
 
-Limit a run to functions and Terraform blocks changed on a local branch by
-naming its base revision:
+Limit a run to functions changed on a local branch by naming its base
+revision:
 
 ```sh
 poly-crap --diff-base main --coverage coverage.lcov --fail-above
@@ -127,12 +127,12 @@ poly-crap --diff-base main --coverage coverage.lcov --fail-above
 
 Poly-crap finds the merge base of the named revision and `HEAD`, then includes
 committed branch changes, staged and unstaged changes, and untracked files. A
-unit enters the report when its current line range meets an added or changed
-line. Its score still uses the whole current function or block and its current
+function enters the report when its current line range meets an added or
+changed line. Its score still uses the whole current function and its current
 coverage.
 
-Git diff mode ignores deleted units and works with the normal language, path,
-exclude, allow, output, and threshold options. It cannot be combined with
+Git diff mode ignores deleted functions and works with the normal language,
+path, exclude, allow, output, and threshold options. It cannot be combined with
 `--baseline` or `--fail-regression`. Git must be installed, the analysis path
 must be inside a Git repository, and the base must name a commit.
 
@@ -167,20 +167,8 @@ poly-crap \
   --fail-regression
 ```
 
-The baseline check covers CRAP scores and Terraform complexity. New, improved,
-regressed, unchanged, moved, and removed units appear in delta JSON. Absolute
-thresholds only apply to CRAP scores.
-
-### Terraform
-
-Terraform has no common line-coverage report, so `.tf` files get a separate
-complexity report and no CRAP score. Poly-crap counts conditional and `for`
-expressions, Boolean branches, dynamic blocks, `count`, `for_each`, and
-validation or condition blocks.
-
-Version 1 does not scan `.tf.json`, `.tfvars`, general `.hcl`, or
-`.tftest.hcl`. SARIF omits Terraform because version 1 has no absolute
-Terraform complexity gate.
+New, improved, regressed, unchanged, moved, and removed functions appear in
+delta JSON.
 
 ### Configuration
 
@@ -188,7 +176,7 @@ Put `.poly-crap.toml` in the project root or a parent directory. Command-line
 values take precedence, and unknown keys cause an error.
 
 ```toml
-languages = ["rust", "typescript", "python", "terraform"]
+languages = ["rust", "typescript", "python"]
 threshold = 30.0
 missing = "pessimistic"
 fail-above = true

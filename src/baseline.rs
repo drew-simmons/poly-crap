@@ -1,4 +1,4 @@
-use crate::model::{Entry, Language, MetricKind, ScopeDiagnostics};
+use crate::model::{Entry, Language, ScopeDiagnostics};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -32,7 +32,6 @@ pub struct RemovedEntry {
     pub language: Language,
     pub file: PathBuf,
     pub symbol: String,
-    pub metric: MetricKind,
     pub baseline_score: f64,
 }
 
@@ -53,7 +52,7 @@ pub fn load(path: &Path) -> Result<Vec<Entry>> {
         .with_context(|| format!("reading baseline {}", path.display()))?;
     let envelope: BaselineEnvelope = serde_json::from_str(&raw).with_context(|| {
         format!(
-            "parsing baseline {}; expected poly-crap JSON output",
+            "parsing baseline {}; expected current poly-crap JSON output, so regenerate an older baseline",
             path.display()
         )
     })?;
@@ -122,7 +121,6 @@ fn match_suffixes(
             .filter(|(index, candidate)| {
                 !matched.contains(index)
                     && candidate.language == delta.current.language
-                    && candidate.metric == delta.current.metric
                     && candidate.symbol == delta.current.symbol
                     && candidate.start_line == delta.current.start_line
             })
@@ -187,14 +185,14 @@ fn match_moves(
 }
 
 fn is_unique_move(
-    key: &(Language, MetricKind, String),
-    current: &HashMap<(Language, MetricKind, String), usize>,
-    baseline: &HashMap<(Language, MetricKind, String), usize>,
+    key: &(Language, String),
+    current: &HashMap<(Language, String), usize>,
+    baseline: &HashMap<(Language, String), usize>,
 ) -> bool {
     current.get(key) == Some(&1) && baseline.get(key) == Some(&1)
 }
 
-fn current_symbol_counts(entries: &[DeltaEntry]) -> HashMap<(Language, MetricKind, String), usize> {
+fn current_symbol_counts(entries: &[DeltaEntry]) -> HashMap<(Language, String), usize> {
     let mut counts = HashMap::new();
     for delta in entries
         .iter()
@@ -208,7 +206,7 @@ fn current_symbol_counts(entries: &[DeltaEntry]) -> HashMap<(Language, MetricKin
 fn baseline_symbol_counts(
     baseline: &[Entry],
     matched: &HashSet<usize>,
-) -> HashMap<(Language, MetricKind, String), usize> {
+) -> HashMap<(Language, String), usize> {
     let mut counts = HashMap::new();
     for (index, entry) in baseline.iter().enumerate() {
         if !matched.contains(&index) {
@@ -227,7 +225,6 @@ fn removed_entries(baseline: &[Entry], matched: &HashSet<usize>) -> Vec<RemovedE
             language: entry.language,
             file: entry.file.clone(),
             symbol: entry.symbol.clone(),
-            metric: entry.metric,
             baseline_score: entry.score,
         })
         .collect()
@@ -263,18 +260,17 @@ fn delta_entry(
     }
 }
 
-fn exact_key(entry: &Entry) -> (Language, MetricKind, String, String, usize) {
+fn exact_key(entry: &Entry) -> (Language, String, String, usize) {
     (
         entry.language,
-        entry.metric,
         normalize_path(&entry.file),
         entry.symbol.clone(),
         entry.start_line,
     )
 }
 
-fn symbol_key(entry: &Entry) -> (Language, MetricKind, String) {
-    (entry.language, entry.metric, entry.symbol.clone())
+fn symbol_key(entry: &Entry) -> (Language, String) {
+    (entry.language, entry.symbol.clone())
 }
 
 fn normalize_path(path: &Path) -> String {
@@ -302,15 +298,9 @@ mod tests {
             symbol: symbol.into(),
             start_line: 1,
             end_line: 2,
-            metric: if language == Language::Terraform {
-                MetricKind::Complexity
-            } else {
-                MetricKind::Crap
-            },
             complexity: score,
             coverage: Some(50.0),
             coverage_basis: Some(CoverageBasis::Line),
-            crap: Some(score),
             score,
             uncovered: Vec::<LineRange>::new(),
         }
@@ -345,14 +335,18 @@ mod tests {
     }
 
     #[test]
-    fn detects_terraform_move() {
-        let baseline = vec![entry(Language::Terraform, "old/a.tf", "resource.x", 2.0)];
+    fn detects_move_across_files() {
+        let baseline = vec![entry(Language::Rust, "old/a.rs", "run", 2.0)];
         let report = compare(
-            vec![entry(Language::Terraform, "new/a.tf", "resource.x", 2.0)],
+            vec![entry(Language::Rust, "new/a.rs", "run", 2.0)],
             &baseline,
             DEFAULT_EPSILON,
             diagnostics(),
         );
         assert_eq!(report.entries[0].status, DeltaStatus::Moved);
+        assert_eq!(
+            report.entries[0].previous_file,
+            Some(PathBuf::from("old/a.rs"))
+        );
     }
 }

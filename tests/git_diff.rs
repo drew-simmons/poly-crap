@@ -279,12 +279,12 @@ fn handles_renames_deletions_and_binary_files() {
 }
 
 #[test]
-fn limits_git_changes_to_path_and_reports_changed_terraform_blocks() {
+fn limits_git_changes_to_the_analysis_path() {
     let dir = tempfile::tempdir().unwrap();
     init(dir.path());
     write(
-        &dir.path().join("infra/main.tf"),
-        "resource \"test_item\" \"changed\" { count = 1 }\nresource \"test_item\" \"same\" { count = 1 }\n",
+        &dir.path().join("infra/app.py"),
+        "def inside(x):\n    return x\n",
     );
     write(
         &dir.path().join("other/app.py"),
@@ -293,8 +293,8 @@ fn limits_git_changes_to_path_and_reports_changed_terraform_blocks() {
     commit_all(dir.path(), "base");
     git(dir.path(), &["checkout", "-b", "topic"]);
     write(
-        &dir.path().join("infra/main.tf"),
-        "resource \"test_item\" \"changed\" { count = var.on ? 1 : 0 }\nresource \"test_item\" \"same\" { count = 1 }\n",
+        &dir.path().join("infra/app.py"),
+        "def inside(x):\n    if x:\n        return x\n    return 0\n",
     );
     write(
         &dir.path().join("other/app.py"),
@@ -302,10 +302,7 @@ fn limits_git_changes_to_path_and_reports_changed_terraform_blocks() {
     );
 
     let report = json_report(&dir.path().join("infra"), &[]);
-    let entries = report["entries"].as_array().unwrap();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0]["metric"], "complexity");
-    assert!(entries[0]["symbol"].as_str().unwrap().contains("changed"));
+    assert_eq!(symbols(&report), ["inside"]);
 }
 
 #[test]

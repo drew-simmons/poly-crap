@@ -17,18 +17,16 @@
   "$defs": {
     "entry": {
       "type": "object",
-      "required": ["language", "file", "symbol", "start_line", "end_line", "metric", "complexity", "coverage", "coverage_basis", "crap", "score"],
+      "required": ["language", "file", "symbol", "start_line", "end_line", "complexity", "coverage", "coverage_basis", "score"],
       "properties": {
-        "language": { "enum": ["javascript", "typescript", "python", "go", "rust", "java", "terraform"] },
+        "language": { "enum": ["javascript", "typescript", "python", "go", "rust", "java"] },
         "file": { "type": "string" },
         "symbol": { "type": "string" },
         "start_line": { "type": "integer", "minimum": 1 },
         "end_line": { "type": "integer", "minimum": 1 },
-        "metric": { "enum": ["crap", "complexity"] },
         "complexity": { "type": "number", "minimum": 1 },
         "coverage": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
         "coverage_basis": { "enum": ["line", "statement", null] },
-        "crap": { "type": ["number", "null"] },
         "score": { "type": "number" },
         "uncovered": {
           "type": "array",
