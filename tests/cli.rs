@@ -154,6 +154,99 @@ fn baseline_delta_matches_schema_and_can_fail() {
 }
 
 #[test]
+fn config_is_found_from_a_subdirectory_with_a_relative_path() {
+    // `--path` defaults to `.`, and `Path::ancestors` on a relative path stops
+    // at that path, so the search has to start from an absolute directory for
+    // a config in a parent directory to be reachable at all.
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join(".poly-crap.toml"), "threshold = 1.0\n");
+    write(
+        &dir.path().join("sub/app.py"),
+        "def risky(x):\n    if x:\n        return 1\n    return 0\n",
+    );
+    cargo_bin_cmd!("poly-crap")
+        .current_dir(dir.path().join("sub"))
+        .args(["--path", ".", "--fail-above"])
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn display_limits_do_not_hide_regressions_from_the_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("app.py");
+    let baseline = dir.path().join("baseline.json");
+    write(
+        &source,
+        "def run(x):\n    if x:\n        return 1\n    return 0\n",
+    );
+    cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+            "--output",
+            baseline.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    write(
+        &source,
+        "def run(x):\n    if x:\n        if x > 1:\n            if x > 2:\n                if x > 3:\n                    return 1\n    return 0\n",
+    );
+    // `--min` drops the low-scoring baseline row. If that filter reaches the
+    // baseline, the regressed function matches nothing and is reported as new,
+    // which `--fail-regression` does not gate on.
+    cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--baseline",
+            baseline.to_str().unwrap(),
+            "--fail-regression",
+            "--min",
+            "10",
+        ])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("regressed"));
+}
+
+#[test]
+fn allow_path_globs_suppress_reported_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir.path().join("vendor/dep.py"),
+        "def vendored(x):\n    if x:\n        return 1\n    return 0\n",
+    );
+    write(
+        &dir.path().join("app.py"),
+        "def kept(x):\n    if x:\n        return 1\n    return 0\n",
+    );
+    let output = cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--no-default-excludes",
+            "--allow",
+            "vendor/**",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let symbols: Vec<_> = report["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["symbol"].as_str().unwrap())
+        .collect();
+    assert_eq!(symbols, ["kept"], "{report}");
+}
+
+#[test]
 fn malformed_coverage_exits_two() {
     let dir = tempfile::tempdir().unwrap();
     write(&dir.path().join("app.js"), "function run() {}\n");

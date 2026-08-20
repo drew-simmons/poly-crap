@@ -133,6 +133,10 @@ fn includes_committed_staged_unstaged_and_untracked_work() {
             &format!("def {name}(x):\n    return x\n"),
         );
     }
+    write(
+        &dir.path().join("日本語.py"),
+        "def unicode_named(x):\n    return x\n",
+    );
     commit_all(dir.path(), "base");
     git(dir.path(), &["checkout", "-b", "topic"]);
 
@@ -158,6 +162,12 @@ fn includes_committed_staged_unstaged_and_untracked_work() {
         &dir.path().join("space name.py"),
         "def spaced(x):\n    if x:\n        return x\n    return 0\n",
     );
+    // Tracked, so its range comes from the patch. CJK has no NFD form, so the
+    // name survives macOS filename normalisation unchanged.
+    write(
+        &dir.path().join("日本語.py"),
+        "def unicode_named(x):\n    if x:\n        return x\n    return 0\n",
+    );
     write(
         &dir.path().join("excluded.py"),
         "def excluded(x):\n    if x:\n        return x\n    return 0\n",
@@ -182,10 +192,12 @@ fn includes_committed_staged_unstaged_and_untracked_work() {
             dir.path().join(format!("{name}.py")).display()
         ));
     }
-    lcov.push_str(&format!(
-        "SF:{}\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,1\nend_of_record\n",
-        dir.path().join("space name.py").display()
-    ));
+    for name in ["space name.py", "日本語.py"] {
+        lcov.push_str(&format!(
+            "SF:{}\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,1\nend_of_record\n",
+            dir.path().join(name).display()
+        ));
+    }
     write(&coverage, &lcov);
 
     let report = json_report(
@@ -201,10 +213,17 @@ fn includes_committed_staged_unstaged_and_untracked_work() {
     found.sort_unstable();
     assert_eq!(
         found,
-        ["committed", "spaced", "staged", "unstaged", "untracked"]
+        [
+            "committed",
+            "spaced",
+            "staged",
+            "unicode_named",
+            "unstaged",
+            "untracked"
+        ]
     );
-    assert_eq!(report["diagnostics"]["coverage_files"], 5);
-    assert_eq!(report["diagnostics"]["matched_files"], 5);
+    assert_eq!(report["diagnostics"]["coverage_files"], 6);
+    assert_eq!(report["diagnostics"]["matched_files"], 6);
     assert_eq!(report["diagnostics"]["coverage_only_count"], 0);
 }
 
@@ -303,6 +322,54 @@ fn limits_git_changes_to_the_analysis_path() {
 
     let report = json_report(&dir.path().join("infra"), &[]);
     assert_eq!(symbols(&report), ["inside"]);
+}
+
+#[test]
+fn an_inherited_git_dir_does_not_redirect_the_diff() {
+    // Git hooks and `git bisect run` export GIT_DIR. It overrides `-C`, so an
+    // inherited value would resolve revisions against the wrong repository.
+    let other = tempfile::tempdir().unwrap();
+    init(other.path());
+    write(
+        &other.path().join("other.py"),
+        "def other(x):\n    return x\n",
+    );
+    commit_all(other.path(), "unrelated");
+
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    write(&dir.path().join("app.py"), "def edited(x):\n    return x\n");
+    // Unchanged since this repository's own merge base. Diffing against an
+    // unrelated tree would surface it as added, so its absence is what proves
+    // the correct repository was used.
+    write(
+        &dir.path().join("untouched.py"),
+        "def untouched(x):\n    return x\n",
+    );
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["checkout", "-b", "topic"]);
+    write(
+        &dir.path().join("app.py"),
+        "def edited(x):\n    if x:\n        return x\n    return 0\n",
+    );
+
+    let mut command = cargo_bin_cmd!("poly-crap");
+    command.env("GIT_DIR", other.path().join(".git")).args([
+        "--path",
+        dir.path().to_str().unwrap(),
+        "--diff-base",
+        "main",
+        "--format",
+        "json",
+    ]);
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(symbols(&report), ["edited"]);
 }
 
 #[test]
