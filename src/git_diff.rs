@@ -137,37 +137,70 @@ fn tracked_ranges(
 /// file whose own contents look like a patch would otherwise have its
 /// `+++ b/...` lines read as headers. Following the `diff --git`, `---`, `+++`
 /// sequence keeps header lines and content lines apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default)]
 enum PatchState {
     AwaitingOldPath,
     AwaitingNewPath,
+    #[default]
     ReadingHunks,
 }
 
-fn parse_patch(raw: &[u8]) -> Result<BTreeMap<PathBuf, Vec<LineRange>>> {
-    let mut files: BTreeMap<PathBuf, Vec<LineRange>> = BTreeMap::new();
-    let mut state = PatchState::ReadingHunks;
-    let mut current = None;
-    for line in raw.split(|byte| *byte == b'\n') {
-        let line = strip_carriage_return(line);
+#[derive(Debug, Default)]
+struct PatchReader {
+    files: BTreeMap<PathBuf, Vec<LineRange>>,
+    current: Option<PathBuf>,
+}
+
+impl PatchReader {
+    fn read_line(&mut self, state: PatchState, line: &[u8]) -> Result<PatchState> {
         if line.starts_with(b"diff --git ") {
-            state = PatchState::AwaitingOldPath;
-            current = None;
-        } else if state == PatchState::AwaitingOldPath && line.starts_with(b"--- ") {
-            state = PatchState::AwaitingNewPath;
-        } else if state == PatchState::AwaitingNewPath && line.starts_with(b"+++ ") {
-            current = patch_path(&line[4..])?;
-            state = PatchState::ReadingHunks;
-        } else if state == PatchState::ReadingHunks && line.starts_with(b"@@ ") {
-            if let Some(path) = &current {
-                files
-                    .entry(path.clone())
-                    .or_default()
-                    .push(parse_hunk(line)?);
-            }
+            self.current = None;
+            return Ok(PatchState::AwaitingOldPath);
+        }
+        self.read_body(state, line)
+    }
+
+    fn read_body(&mut self, state: PatchState, line: &[u8]) -> Result<PatchState> {
+        match state {
+            PatchState::AwaitingOldPath => Ok(await_old_path(line)),
+            PatchState::AwaitingNewPath => self.read_new_path(line),
+            PatchState::ReadingHunks => self.read_hunk(line).map(|()| state),
         }
     }
-    Ok(files)
+
+    fn read_new_path(&mut self, line: &[u8]) -> Result<PatchState> {
+        if !line.starts_with(b"+++ ") {
+            return Ok(PatchState::AwaitingNewPath);
+        }
+        self.current = patch_path(&line[4..])?;
+        Ok(PatchState::ReadingHunks)
+    }
+
+    fn read_hunk(&mut self, line: &[u8]) -> Result<()> {
+        let Some(path) = self.current.clone() else {
+            return Ok(());
+        };
+        if line.starts_with(b"@@ ") {
+            self.files.entry(path).or_default().push(parse_hunk(line)?);
+        }
+        Ok(())
+    }
+}
+
+fn await_old_path(line: &[u8]) -> PatchState {
+    if line.starts_with(b"--- ") {
+        return PatchState::AwaitingNewPath;
+    }
+    PatchState::AwaitingOldPath
+}
+
+fn parse_patch(raw: &[u8]) -> Result<BTreeMap<PathBuf, Vec<LineRange>>> {
+    let mut reader = PatchReader::default();
+    let mut state = PatchState::default();
+    for line in raw.split(|byte| *byte == b'\n') {
+        state = reader.read_line(state, strip_carriage_return(line))?;
+    }
+    Ok(reader.files)
 }
 
 /// Path from a `+++` header, or `None` when there is no post-image to scan.
@@ -449,6 +482,18 @@ mod tests {
         assert_eq!(
             parsed[&PathBuf::from("notes.py")],
             vec![LineRange { start: 1, end: 4 }]
+        );
+    }
+
+    #[test]
+    fn waits_for_the_new_path_header() {
+        // Git puts `+++` straight after `---`. Anything else leaves the reader
+        // waiting rather than taking the line as a path.
+        let patch =
+            b"diff --git a/a.py b/a.py\n--- a/a.py\nunexpected\n+++ b/a.py\n@@ -1 +1,2 @@\n";
+        assert_eq!(
+            parse_patch(patch).unwrap()[&PathBuf::from("a.py")],
+            vec![LineRange { start: 1, end: 2 }]
         );
     }
 
