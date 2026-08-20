@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0](https://github.com/drew-simmons/poly-crap/compare/v0.2.0...v0.3.0) (2026-08-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove Terraform support ([#10](https://github.com/drew-simmons/poly-crap/issues/10))
+
+### Features
+
+* remove Terraform support ([#10](https://github.com/drew-simmons/poly-crap/issues/10)) ([225c7fa](https://github.com/drew-simmons/poly-crap/commit/225c7fa60b78009c3d3576ca460088a2d4659e14))
+
+
+### Bug Fixes
+
+* correct allow globs, baseline gating, and Git diff scoping ([#11](https://github.com/drew-simmons/poly-crap/issues/11)) ([256ae91](https://github.com/drew-simmons/poly-crap/commit/256ae91e8a08d749c5e6f2297a449aeb338ade75))
+
 ## [0.2.0](https://github.com/drew-simmons/poly-crap/compare/v0.1.1...v0.2.0) (2026-08-14)
 
 
