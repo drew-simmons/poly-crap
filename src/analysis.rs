@@ -150,14 +150,13 @@ fn build_globs(patterns: &[String]) -> Result<GlobSet> {
 
 type GrammarLoader = fn(&Path) -> tree_sitter::Language;
 
-const GRAMMAR_LOADERS: [GrammarLoader; 7] = [
+const GRAMMAR_LOADERS: [GrammarLoader; 6] = [
     javascript_grammar,
     typescript_grammar,
     python_grammar,
     go_grammar,
     rust_grammar,
     java_grammar,
-    terraform_grammar,
 ];
 
 fn grammar(language: Language, path: &Path) -> tree_sitter::Language {
@@ -190,10 +189,6 @@ fn rust_grammar(_: &Path) -> tree_sitter::Language {
 
 fn java_grammar(_: &Path) -> tree_sitter::Language {
     tree_sitter_java::LANGUAGE.into()
-}
-
-fn terraform_grammar(_: &Path) -> tree_sitter::Language {
-    tree_sitter_hcl::LANGUAGE.into()
 }
 
 fn analyze_file(path: &Path, language: Language) -> Result<FileAnalysis> {
@@ -231,7 +226,7 @@ fn analyze_file(path: &Path, language: Language) -> Result<FileAnalysis> {
             symbol: qualify_symbol(spec.node, language, &spec.name, bytes),
             start_line: spec.node.start_position().row + 1,
             end_line: spec.node.end_position().row + 1,
-            complexity: complexity(spec.node, language, bytes) as f64,
+            complexity: complexity(spec.node, bytes) as f64,
         })
         .collect();
     Ok(FileAnalysis {
@@ -246,10 +241,11 @@ fn collect_units<'tree>(
     source: &[u8],
     output: &mut Vec<UnitSpec<'tree>>,
 ) {
-    if language == Language::Terraform {
-        collect_terraform_unit(node, source, output);
-    } else {
-        collect_code_unit(node, language, source, output);
+    if let Some((unit_node, name)) = named_unit(node, language, source) {
+        output.push(UnitSpec {
+            node: unit_node,
+            name,
+        });
     }
 
     let mut cursor = node.walk();
@@ -258,34 +254,7 @@ fn collect_units<'tree>(
     }
 }
 
-fn collect_terraform_unit<'tree>(
-    node: Node<'tree>,
-    source: &[u8],
-    output: &mut Vec<UnitSpec<'tree>>,
-) {
-    if node.kind() != "block" || has_ancestor_kind(node, "block") {
-        return;
-    }
-    if let Some(name) = terraform_block_name(node, source) {
-        output.push(UnitSpec { node, name });
-    }
-}
-
-fn collect_code_unit<'tree>(
-    node: Node<'tree>,
-    language: Language,
-    source: &[u8],
-    output: &mut Vec<UnitSpec<'tree>>,
-) {
-    if let Some((unit_node, name)) = named_unit(node, language, source) {
-        output.push(UnitSpec {
-            node: unit_node,
-            name,
-        });
-    }
-}
-
-const DECLARATION_KINDS: [&[&str]; 7] = [
+const DECLARATION_KINDS: [&[&str]; 6] = [
     &[
         "function_declaration",
         "generator_function_declaration",
@@ -300,7 +269,6 @@ const DECLARATION_KINDS: [&[&str]; 7] = [
     &["function_declaration", "method_declaration"],
     &["function_item"],
     &["method_declaration", "constructor_declaration"],
-    &[],
 ];
 
 fn named_unit<'tree>(
@@ -495,7 +463,7 @@ fn qualify_symbol(node: Node<'_>, language: Language, name: &str, source: &[u8])
     parts.join(SYMBOL_SEPARATORS[language.index()])
 }
 
-const SYMBOL_SEPARATORS: [&str; 7] = [".", ".", ".", ".", "::", ".", "."];
+const SYMBOL_SEPARATORS: [&str; 6] = [".", ".", ".", ".", "::", "."];
 
 fn container_parts(node: Node<'_>, language: Language, source: &[u8]) -> Vec<String> {
     let mut parts = Vec::new();
@@ -573,28 +541,22 @@ fn is_java_callable(node: Node<'_>, language: Language) -> bool {
         )
 }
 
-fn complexity(root: Node<'_>, language: Language, source: &[u8]) -> usize {
+fn complexity(root: Node<'_>, source: &[u8]) -> usize {
     let mut count = 1;
-    count_decisions(root, root, language, source, &mut count);
+    count_decisions(root, root, source, &mut count);
     count
 }
 
-fn count_decisions(
-    node: Node<'_>,
-    root: Node<'_>,
-    language: Language,
-    source: &[u8],
-    count: &mut usize,
-) {
+fn count_decisions(node: Node<'_>, root: Node<'_>, source: &[u8], count: &mut usize) {
     if node != root && is_callable(node.kind()) {
         return;
     }
-    if is_decision(node, language, source) {
+    if is_decision(node, source) {
         *count += 1;
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        count_decisions(child, root, language, source, count);
+        count_decisions(child, root, source, count);
     }
 }
 
@@ -618,10 +580,7 @@ fn is_callable(kind: &str) -> bool {
     )
 }
 
-fn is_decision(node: Node<'_>, language: Language, source: &[u8]) -> bool {
-    if language == Language::Terraform {
-        return is_terraform_decision(node, source);
-    }
+fn is_decision(node: Node<'_>, source: &[u8]) -> bool {
     if is_simple_decision(node.kind()) {
         return true;
     }
@@ -677,101 +636,12 @@ fn is_boolean_decision(node: Node<'_>, source: &[u8]) -> bool {
         && has_boolean_operator(node, source)
 }
 
-fn is_terraform_decision(node: Node<'_>, source: &[u8]) -> bool {
-    terraform_expression(node)
-        || terraform_boolean(node, source)
-        || terraform_attribute(node, source)
-        || terraform_block(node, source)
-}
-
-fn terraform_expression(node: Node<'_>) -> bool {
-    matches!(node.kind(), "conditional" | "for_expr" | "for_cond")
-}
-
-fn terraform_boolean(node: Node<'_>, source: &[u8]) -> bool {
-    node.kind() == "binary_operation" && has_boolean_operator(node, source)
-}
-
-fn terraform_attribute(node: Node<'_>, source: &[u8]) -> bool {
-    if node.kind() != "attribute" {
-        return false;
-    }
-    first_named_text(node, source).is_some_and(|name| matches!(name, "count" | "for_each"))
-}
-
-fn terraform_block(node: Node<'_>, source: &[u8]) -> bool {
-    if node.kind() != "block" {
-        return false;
-    }
-    let body = text(node, source).unwrap_or_default();
-    [
-        "dynamic",
-        "validation",
-        "precondition",
-        "postcondition",
-        "assert",
-    ]
-    .iter()
-    .any(|prefix| body.trim_start().starts_with(prefix))
-}
-
 fn has_boolean_operator(node: Node<'_>, source: &[u8]) -> bool {
     let mut cursor = node.walk();
     node.children(&mut cursor).any(|child| {
         matches!(child.kind(), "&&" | "||" | "and" | "or")
             || text(child, source).is_some_and(|value| matches!(value, "&&" | "||" | "and" | "or"))
     })
-}
-
-fn terraform_block_name(node: Node<'_>, source: &[u8]) -> Option<String> {
-    let mut cursor = node.walk();
-    let mut parts = node
-        .named_children(&mut cursor)
-        .filter_map(|child| text(child, source))
-        .take_while(|value| !value.trim_start().starts_with('{'))
-        .map(|value| value.trim().trim_matches('"').to_string());
-    let kind = parts.next()?;
-    if ![
-        "resource",
-        "data",
-        "module",
-        "variable",
-        "output",
-        "locals",
-        "provider",
-        "terraform",
-        "check",
-        "import",
-        "moved",
-    ]
-    .contains(&kind.as_str())
-    {
-        return None;
-    }
-    Some(
-        std::iter::once(kind)
-            .chain(parts)
-            .collect::<Vec<_>>()
-            .join("."),
-    )
-}
-
-fn first_named_text<'a>(node: Node<'_>, source: &'a [u8]) -> Option<&'a str> {
-    let mut cursor = node.walk();
-    node.named_children(&mut cursor)
-        .next()
-        .and_then(|child| text(child, source))
-}
-
-fn has_ancestor_kind(node: Node<'_>, kind: &str) -> bool {
-    let mut parent = node.parent();
-    while let Some(ancestor) = parent {
-        if ancestor.kind() == kind {
-            return true;
-        }
-        parent = ancestor.parent();
-    }
-    false
 }
 
 fn text<'a>(node: Node<'_>, source: &'a [u8]) -> Option<&'a str> {
@@ -897,13 +767,10 @@ mod tests {
     }
 
     #[test]
-    fn terraform_reports_top_level_blocks() {
-        let units = analyze(
-            "tf",
-            "resource \"aws_x\" \"main\" { count = var.on ? 1 : 0 }\nmodule \"child\" { source = \"./child\" }",
-        );
-        assert_eq!(units.len(), 2);
-        assert!(units[0].symbol.starts_with("resource"));
-        assert_eq!(units[0].complexity, 3.0);
+    fn terraform_files_are_not_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.tf");
+        fs::write(&path, "resource \"aws_x\" \"main\" { count = 1 }\n").unwrap();
+        assert!(Language::from_path(&path).is_none());
     }
 }

@@ -1,5 +1,5 @@
 use crate::baseline::{DeltaReport, DeltaStatus};
-use crate::model::{Entry, MetricKind, ScopeDiagnostics};
+use crate::model::{Entry, ScopeDiagnostics};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
@@ -113,21 +113,15 @@ fn is_path_pattern(pattern: &str) -> bool {
 fn apply_top(entries: &mut Vec<Entry>, top: Option<usize>) {
     if let Some(limit) = top {
         sort_entries(entries, SortOrder::Crap);
-        let mut seen = [0usize; 2];
-        entries.retain(|entry| {
-            let index = usize::from(entry.metric == MetricKind::Complexity);
-            seen[index] += 1;
-            seen[index] <= limit
-        });
+        entries.truncate(limit);
     }
 }
 
 pub fn sort_entries(entries: &mut [Entry], sort: SortOrder) {
     match sort {
         SortOrder::Crap => entries.sort_by(|a, b| {
-            metric_rank(a.metric)
-                .cmp(&metric_rank(b.metric))
-                .then(b.score.total_cmp(&a.score))
+            b.score
+                .total_cmp(&a.score)
                 .then(a.file.cmp(&b.file))
                 .then(a.start_line.cmp(&b.start_line))
         }),
@@ -182,21 +176,12 @@ fn render_human(
     summary: bool,
 ) -> String {
     let mut output = Vec::new();
-    let crap_entries: Vec<_> = entries
-        .iter()
-        .filter(|entry| entry.metric == MetricKind::Crap)
-        .collect();
-    let terraform_entries: Vec<_> = entries
-        .iter()
-        .filter(|entry| entry.metric == MetricKind::Complexity)
-        .collect();
-    render_crap_section(&mut output, &crap_entries, threshold, summary);
-    render_terraform_section(&mut output, &terraform_entries, summary);
+    render_crap_section(&mut output, entries, threshold, summary);
     append_scope_summary(&mut output, diagnostics);
     String::from_utf8(output).expect("human report is UTF-8")
 }
 
-fn render_crap_section(output: &mut Vec<u8>, entries: &[&Entry], threshold: f64, summary: bool) {
+fn render_crap_section(output: &mut Vec<u8>, entries: &[Entry], threshold: f64, summary: bool) {
     let failures = entries
         .iter()
         .filter(|entry| entry.score > threshold)
@@ -232,36 +217,6 @@ fn render_crap_entry(output: &mut Vec<u8>, entry: &Entry) {
         entry.complexity,
         coverage,
         entry.language,
-        entry.symbol,
-        entry.file.display(),
-        entry.start_line
-    )
-    .unwrap();
-}
-
-fn render_terraform_section(output: &mut Vec<u8>, entries: &[&Entry], summary: bool) {
-    if !entries.is_empty() {
-        writeln!(output, "\nTerraform complexity").unwrap();
-        if !summary {
-            writeln!(output, "  Complexity  Block  Location").unwrap();
-            for entry in entries {
-                render_terraform_entry(output, entry);
-            }
-        }
-        writeln!(
-            output,
-            "{} Terraform block(s) analyzed; CRAP threshold does not apply.",
-            entries.len()
-        )
-        .unwrap();
-    }
-}
-
-fn render_terraform_entry(output: &mut Vec<u8>, entry: &Entry) {
-    writeln!(
-        output,
-        "  {:>10.1}  {}  {}:{}",
-        entry.score,
         entry.symbol,
         entry.file.display(),
         entry.start_line
@@ -355,7 +310,7 @@ fn append_scope_summary(output: &mut Vec<u8>, diagnostics: &ScopeDiagnostics) {
 fn render_sarif(entries: &[Entry], threshold: f64) -> Result<String> {
     let results: Vec<_> = entries
         .iter()
-        .filter(|entry| entry.metric == MetricKind::Crap && entry.score > threshold)
+        .filter(|entry| entry.score > threshold)
         .map(|entry| {
             json!({
                 "ruleId": "poly-crap/crap-threshold",
@@ -386,18 +341,9 @@ fn render_sarif(entries: &[Entry], threshold: f64) -> Result<String> {
     .context("serializing SARIF report")
 }
 
-fn metric_rank(metric: MetricKind) -> u8 {
-    match metric {
-        MetricKind::Crap => 0,
-        MetricKind::Complexity => 1,
-    }
-}
-
 #[must_use]
 pub fn threshold_failed(entries: &[Entry], threshold: f64) -> bool {
-    entries
-        .iter()
-        .any(|entry| entry.metric == MetricKind::Crap && entry.score > threshold)
+    entries.iter().any(|entry| entry.score > threshold)
 }
 
 #[must_use]
@@ -415,22 +361,16 @@ mod tests {
     use crate::model::{CoverageBasis, Language};
     use std::path::PathBuf;
 
-    fn entry(metric: MetricKind, score: f64) -> Entry {
+    fn entry(score: f64) -> Entry {
         Entry {
-            language: if metric == MetricKind::Crap {
-                Language::Rust
-            } else {
-                Language::Terraform
-            },
+            language: Language::Rust,
             file: PathBuf::from("src/a.rs"),
             symbol: "run".into(),
             start_line: 1,
             end_line: 2,
-            metric,
             complexity: 4.0,
             coverage: Some(50.0),
             coverage_basis: Some(CoverageBasis::Line),
-            crap: (metric == MetricKind::Crap).then_some(score),
             score,
             uncovered: Vec::new(),
         }
@@ -453,38 +393,33 @@ mod tests {
     }
 
     #[test]
-    fn threshold_ignores_terraform() {
-        assert!(!threshold_failed(
-            &[entry(MetricKind::Complexity, 100.0)],
-            30.0
-        ));
-        assert!(threshold_failed(&[entry(MetricKind::Crap, 31.0)], 30.0));
+    fn threshold_uses_the_crap_score() {
+        assert!(!threshold_failed(&[entry(30.0)], 30.0));
+        assert!(threshold_failed(&[entry(31.0)], 30.0));
     }
 
     #[test]
-    fn top_is_per_metric() {
+    fn top_keeps_the_highest_scores() {
         let filtered = filter_entries(
-            vec![
-                entry(MetricKind::Crap, 4.0),
-                entry(MetricKind::Crap, 3.0),
-                entry(MetricKind::Complexity, 2.0),
-            ],
+            vec![entry(4.0), entry(3.0), entry(2.0)],
             &[],
             None,
-            Some(1),
+            Some(2),
             SortOrder::Crap,
         )
         .unwrap();
         assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].score, 4.0);
+        assert_eq!(filtered[1].score, 3.0);
     }
 
     #[test]
     fn allow_patterns_filter_names_and_paths() {
-        let mut generated = entry(MetricKind::Crap, 4.0);
+        let mut generated = entry(4.0);
         generated.file = PathBuf::from("generated/a.rs");
         generated.symbol = "keep".into();
         let filtered = filter_entries(
-            vec![entry(MetricKind::Crap, 3.0), generated],
+            vec![entry(3.0), generated],
             &["run".into(), "generated/**".into()],
             None,
             None,
@@ -496,27 +431,26 @@ mod tests {
     }
 
     #[test]
-    fn human_output_separates_metrics() {
-        let entries = vec![
-            entry(MetricKind::Crap, 6.0),
-            entry(MetricKind::Complexity, 3.0),
-        ];
+    fn human_output_reports_the_crap_section() {
+        let entries = vec![entry(6.0), entry(3.0)];
         let report = render_human(&entries, &diagnostics(), 5.0, false);
         assert!(report.contains("CRAP results"));
-        assert!(report.contains("Terraform complexity"));
+        assert!(report.contains("1 of 2 function(s) exceed CRAP threshold 5.0."));
         assert!(render_human(&entries, &diagnostics(), 5.0, true).contains("2 analyzed file"));
-        assert!(
-            !render_human(&entries[..1], &diagnostics(), 5.0, false)
-                .contains("Terraform complexity")
-        );
+    }
+
+    #[test]
+    fn sarif_reports_only_entries_above_the_threshold() {
+        let rendered = render_sarif(&[entry(6.0), entry(3.0)], 5.0).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["runs"][0]["results"].as_array().unwrap().len(), 1);
     }
 
     #[test]
     fn delta_human_lists_changes_and_removals() {
-        let current = entry(MetricKind::Crap, 8.0);
         let report = DeltaReport {
             entries: vec![DeltaEntry {
-                current,
+                current: entry(8.0),
                 baseline_score: Some(4.0),
                 delta: Some(4.0),
                 status: DeltaStatus::Regressed,
@@ -526,7 +460,6 @@ mod tests {
                 language: Language::Rust,
                 file: PathBuf::from("src/old.rs"),
                 symbol: "old".into(),
-                metric: MetricKind::Crap,
                 baseline_score: 2.0,
             }],
             diagnostics: diagnostics(),

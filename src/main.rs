@@ -52,11 +52,11 @@ struct Cli {
     #[arg(long, value_name = "GLOB")]
     allow: Vec<String>,
 
-    /// Hide entries whose primary score is below this value.
+    /// Hide entries whose CRAP score is below this value.
     #[arg(long)]
     min: Option<f64>,
 
-    /// Show at most this many entries in each metric section.
+    /// Show at most this many entries.
     #[arg(long)]
     top: Option<usize>,
 
@@ -72,7 +72,7 @@ struct Cli {
     #[arg(long)]
     summary: bool,
 
-    /// Exit 1 when a programming-language function exceeds the threshold.
+    /// Exit 1 when a function exceeds the CRAP threshold.
     #[arg(long)]
     fail_above: bool,
 
@@ -80,11 +80,11 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     baseline: Option<PathBuf>,
 
-    /// Git revision used to limit analysis to changed functions and blocks.
+    /// Git revision used to limit analysis to changed functions.
     #[arg(long, value_name = "REV", conflicts_with = "baseline")]
     diff_base: Option<String>,
 
-    /// Exit 1 when CRAP or Terraform complexity rises from the baseline.
+    /// Exit 1 when a CRAP score rises from the baseline.
     #[arg(long, requires = "baseline")]
     fail_regression: bool,
 

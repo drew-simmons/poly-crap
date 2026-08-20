@@ -11,18 +11,16 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["language", "file", "symbol", "start_line", "end_line", "metric", "complexity", "coverage", "coverage_basis", "crap", "score", "baseline_score", "delta", "status"],
+        "required": ["language", "file", "symbol", "start_line", "end_line", "complexity", "coverage", "coverage_basis", "score", "baseline_score", "delta", "status"],
         "properties": {
-          "language": { "enum": ["javascript", "typescript", "python", "go", "rust", "java", "terraform"] },
+          "language": { "enum": ["javascript", "typescript", "python", "go", "rust", "java"] },
           "file": { "type": "string" },
           "symbol": { "type": "string" },
           "start_line": { "type": "integer", "minimum": 1 },
           "end_line": { "type": "integer", "minimum": 1 },
-          "metric": { "enum": ["crap", "complexity"] },
           "complexity": { "type": "number", "minimum": 1 },
           "coverage": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
           "coverage_basis": { "enum": ["line", "statement", null] },
-          "crap": { "type": ["number", "null"] },
           "score": { "type": "number" },
           "uncovered": { "type": "array" },
           "baseline_score": { "type": ["number", "null"] },
@@ -37,12 +35,11 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["language", "file", "symbol", "metric", "baseline_score"],
+        "required": ["language", "file", "symbol", "baseline_score"],
         "properties": {
           "language": { "type": "string" },
           "file": { "type": "string" },
           "symbol": { "type": "string" },
-          "metric": { "enum": ["crap", "complexity"] },
           "baseline_score": { "type": "number" }
         },
         "additionalProperties": false
