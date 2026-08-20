@@ -622,7 +622,10 @@ fn is_arm_decision(kind: &str) -> bool {
             | "communication_case"
             | "case_clause"
             | "match_arm"
-            | "switch_rule"
+            // Java: one per label in both `case x:` and `case x ->` forms.
+            // Counting the enclosing `switch_rule` instead would miss the
+            // colon form and double-count the arrow form.
+            | "switch_label"
     )
 }
 
@@ -764,6 +767,26 @@ mod tests {
         );
         assert_eq!(units.len(), 2);
         assert!(units.iter().any(|unit| unit.symbol == "A.f(String)"));
+    }
+
+    #[test]
+    fn java_switch_forms_score_the_same() {
+        let colon = analyze(
+            "java",
+            "class A { int f(int x) { switch (x) { case 1: return 1; case 2: return 2; case 3: return 3; default: return 0; } } }",
+        );
+        let arrow = analyze(
+            "java",
+            "class A { int f(int x) { return switch (x) { case 1 -> 1; case 2 -> 2; case 3 -> 3; default -> 0; }; } }",
+        );
+        assert_eq!(
+            colon[0].complexity, 4.0,
+            "colon-form switch was not counted"
+        );
+        assert_eq!(
+            arrow[0].complexity, 4.0,
+            "arrow-form switch was double counted"
+        );
     }
 
     #[test]
