@@ -249,9 +249,68 @@ fn collect_units<'tree>(
     }
 
     let mut cursor = node.walk();
+    let mut attributes = TestAttributes::new(language);
     for child in node.named_children(&mut cursor) {
+        if attributes.skips(child, source) {
+            continue;
+        }
         collect_units(child, language, source, output);
     }
+}
+
+/// Tracks Rust test attributes while walking a list of sibling nodes.
+///
+/// Rust puts an attribute in its own node ahead of the item it annotates, so a
+/// `#[cfg(test)] mod tests` block and its `#[test]` functions look like plain
+/// units. Scoring them measures the test suite against itself, which says
+/// nothing about production risk, and it buries the real entries. Other
+/// languages keep their tests in separate files, which the default excludes
+/// already drop.
+struct TestAttributes {
+    rust: bool,
+    pending: bool,
+}
+
+impl TestAttributes {
+    fn new(language: Language) -> Self {
+        Self {
+            rust: language == Language::Rust,
+            pending: false,
+        }
+    }
+
+    /// Report whether this sibling should be skipped along with its subtree.
+    ///
+    /// Attributes are always skipped themselves; they hold no units. A test
+    /// attribute stays pending across any attributes that follow it, so
+    /// `#[cfg(test)]` still suppresses the item under `#[allow(..)]`.
+    fn skips(&mut self, node: Node<'_>, source: &[u8]) -> bool {
+        if !self.rust {
+            return false;
+        }
+        if node.kind() == "attribute_item" {
+            self.pending |= is_test_attribute(node, source);
+            return true;
+        }
+        std::mem::take(&mut self.pending)
+    }
+}
+
+/// Match `#[cfg(test)]` and `#[test]`-style attributes, including `#[tokio::test]`.
+///
+/// Compound forms such as `cfg(all(test, feature = "x"))` are not matched; they
+/// are rare, and treating them as production code errs toward reporting more.
+fn is_test_attribute(node: Node<'_>, source: &[u8]) -> bool {
+    let Some(raw) = text(node, source) else {
+        return false;
+    };
+    let stripped: String = raw.chars().filter(|value| !value.is_whitespace()).collect();
+    let inner = stripped.trim_start_matches("#[").trim_end_matches(']');
+    inner == "cfg(test)" || is_test_marker(inner)
+}
+
+fn is_test_marker(inner: &str) -> bool {
+    inner == "test" || inner.ends_with("::test")
 }
 
 const DECLARATION_KINDS: [&[&str]; 6] = [
@@ -747,6 +806,31 @@ mod tests {
             "fn choose(x: u8) -> u8 { match x { 0 => 1, _ => 2 } }",
         );
         assert_eq!(units[0].complexity, 2.0);
+    }
+
+    #[test]
+    fn rust_test_code_is_not_scored() {
+        let units = analyze(
+            "rs",
+            concat!(
+                "fn keep(x: bool) { if x { loop {} } }\n",
+                "#[cfg(test)]\n",
+                "mod tests {\n",
+                "    fn helper(x: bool) { if x { loop {} } }\n",
+                "    #[test]\n",
+                "    fn case() {}\n",
+                "}\n",
+                "#[cfg(test)]\n",
+                "fn gated() {}\n",
+                "#[tokio::test]\n",
+                "async fn async_case() {}\n",
+                "#[allow(dead_code)]\n",
+                "fn attributed(x: bool) { if x { loop {} } }\n",
+            ),
+        );
+        let symbols: Vec<_> = units.iter().map(|unit| unit.symbol.as_str()).collect();
+        // A non-test attribute must not suppress the item it annotates.
+        assert_eq!(symbols, ["keep", "attributed"]);
     }
 
     #[test]

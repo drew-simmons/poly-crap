@@ -49,19 +49,53 @@ struct DeltaEnvelope<'a> {
     diagnostics: &'a ScopeDiagnostics,
 }
 
-pub fn filter_entries(
+/// Build the entry set the gates and the summary counts are measured against.
+///
+/// Only `--allow` removes entries here. `--min` and `--top` are display limits
+/// and must not reach this set: dropping a row would let a function above the
+/// threshold exit 0 under `--fail-above`. Apply them with
+/// [`apply_display_limits`] once the gate has run.
+pub fn gate_entries(
     entries: Vec<Entry>,
     allow: &[String],
     root: &Path,
-    min: Option<f64>,
-    top: Option<usize>,
     sort: SortOrder,
 ) -> Result<Vec<Entry>> {
     let mut entries = filter_allowed(entries, allow, root)?;
+    sort_entries(&mut entries, sort);
+    Ok(entries)
+}
+
+/// Trim an already-gated set down to the rows worth printing.
+///
+/// Never call this before a gate or before a baseline comparison; see
+/// [`gate_entries`].
+#[must_use]
+pub fn apply_display_limits(
+    mut entries: Vec<Entry>,
+    min: Option<f64>,
+    top: Option<usize>,
+    sort: SortOrder,
+) -> Vec<Entry> {
     entries.retain(|entry| min.is_none_or(|minimum| entry.score >= minimum));
     apply_top(&mut entries, top);
     sort_entries(&mut entries, sort);
-    Ok(entries)
+    entries
+}
+
+/// Apply the same display limits to a delta report, scoring by the current run.
+///
+/// Removed entries have no current score, so the limits leave them alone.
+pub fn limit_delta(report: &mut DeltaReport, min: Option<f64>, top: Option<usize>) {
+    report
+        .entries
+        .retain(|entry| min.is_none_or(|minimum| entry.current.score >= minimum));
+    if let Some(limit) = top {
+        report
+            .entries
+            .sort_by(|a, b| b.current.score.total_cmp(&a.current.score));
+        report.entries.truncate(limit);
+    }
 }
 
 /// Drop entries suppressed by `--allow`, leaving the display limits alone.
@@ -168,15 +202,45 @@ pub fn sort_entries(entries: &mut [Entry], sort: SortOrder) {
     }
 }
 
+/// Counts for the human summary line, measured before display limits apply.
+///
+/// Printing `entries.len()` instead would report "0 of 0" once `--min` or
+/// `--top` trimmed the rows, hiding how much was actually scanned.
+#[derive(Debug, Clone, Copy)]
+pub struct Totals {
+    failures: usize,
+    total: usize,
+}
+
+impl Totals {
+    #[must_use]
+    pub fn new(entries: &[Entry], threshold: f64) -> Self {
+        Self {
+            failures: entries
+                .iter()
+                .filter(|entry| entry.score > threshold)
+                .count(),
+            total: entries.len(),
+        }
+    }
+}
+
 pub fn render_absolute(
     entries: Vec<Entry>,
     diagnostics: ScopeDiagnostics,
     format: OutputFormat,
     threshold: f64,
     summary: bool,
+    totals: Totals,
 ) -> Result<String> {
     match format {
-        OutputFormat::Human => Ok(render_human(&entries, &diagnostics, threshold, summary)),
+        OutputFormat::Human => Ok(render_human(
+            &entries,
+            &diagnostics,
+            threshold,
+            summary,
+            totals,
+        )),
         OutputFormat::Json => serde_json::to_string_pretty(&ReportEnvelope {
             schema: REPORT_SCHEMA.into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -208,18 +272,21 @@ fn render_human(
     diagnostics: &ScopeDiagnostics,
     threshold: f64,
     summary: bool,
+    totals: Totals,
 ) -> String {
     let mut output = Vec::new();
-    render_crap_section(&mut output, entries, threshold, summary);
+    render_crap_section(&mut output, entries, threshold, summary, totals);
     append_scope_summary(&mut output, diagnostics);
     String::from_utf8(output).expect("human report is UTF-8")
 }
 
-fn render_crap_section(output: &mut Vec<u8>, entries: &[Entry], threshold: f64, summary: bool) {
-    let failures = entries
-        .iter()
-        .filter(|entry| entry.score > threshold)
-        .count();
+fn render_crap_section(
+    output: &mut Vec<u8>,
+    entries: &[Entry],
+    threshold: f64,
+    summary: bool,
+    totals: Totals,
+) {
     writeln!(output, "CRAP results").unwrap();
     if !summary {
         writeln!(
@@ -234,8 +301,7 @@ fn render_crap_section(output: &mut Vec<u8>, entries: &[Entry], threshold: f64, 
     writeln!(
         output,
         "{} of {} function(s) exceed CRAP threshold {threshold:.1}.",
-        failures,
-        entries.len()
+        totals.failures, totals.total
     )
     .unwrap();
 }
@@ -434,18 +500,32 @@ mod tests {
 
     #[test]
     fn top_keeps_the_highest_scores() {
-        let filtered = filter_entries(
+        let filtered = apply_display_limits(
             vec![entry(4.0), entry(3.0), entry(2.0)],
-            &[],
-            Path::new("."),
             None,
             Some(2),
             SortOrder::Crap,
-        )
-        .unwrap();
+        );
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].score, 4.0);
         assert_eq!(filtered[1].score, 3.0);
+    }
+
+    #[test]
+    fn display_limits_leave_the_gate_set_alone() {
+        let entries = gate_entries(
+            vec![entry(4.0), entry(3.0), entry(2.0)],
+            &[],
+            Path::new("."),
+            SortOrder::Crap,
+        )
+        .unwrap();
+        // `--min` must not decide the gate: every entry still has to reach
+        // `threshold_failed`, and the summary must count all three.
+        let totals = Totals::new(&entries, 1.0);
+        assert_eq!((totals.failures, totals.total), (3, 3));
+        assert!(threshold_failed(&entries, 1.0));
+        assert!(apply_display_limits(entries, Some(100.0), None, SortOrder::Crap).is_empty());
     }
 
     #[test]
@@ -453,27 +533,15 @@ mod tests {
         let mut generated = entry(4.0);
         generated.file = PathBuf::from("generated/a.rs");
         generated.symbol = "keep".into();
-        let filtered = filter_entries(
+        let filtered = gate_entries(
             vec![entry(3.0), generated],
             &["run".into(), "generated/**".into()],
             Path::new("."),
-            None,
-            None,
             SortOrder::Crap,
         )
         .unwrap();
         assert!(filtered.is_empty());
-        assert!(
-            filter_entries(
-                Vec::new(),
-                &["[".into()],
-                Path::new("."),
-                None,
-                None,
-                SortOrder::Crap
-            )
-            .is_err()
-        );
+        assert!(gate_entries(Vec::new(), &["[".into()], Path::new("."), SortOrder::Crap).is_err());
     }
 
     #[test]
@@ -487,12 +555,10 @@ mod tests {
         // `--path .` reports `./vendor/a.rs`; `--path /repo` reports the
         // absolute path. The documented `vendor/**` must suppress both.
         for (root, file) in [(".", "./vendor/a.rs"), ("/repo", "/repo/vendor/a.rs")] {
-            let filtered = filter_entries(
+            let filtered = gate_entries(
                 vec![prefixed(file)],
                 &["vendor/**".into()],
                 Path::new(root),
-                None,
-                None,
                 SortOrder::Crap,
             )
             .unwrap();
@@ -503,10 +569,19 @@ mod tests {
     #[test]
     fn human_output_reports_the_crap_section() {
         let entries = vec![entry(6.0), entry(3.0)];
-        let report = render_human(&entries, &diagnostics(), 5.0, false);
+        let totals = Totals::new(&entries, 5.0);
+        let report = render_human(&entries, &diagnostics(), 5.0, false, totals);
         assert!(report.contains("CRAP results"));
         assert!(report.contains("1 of 2 function(s) exceed CRAP threshold 5.0."));
-        assert!(render_human(&entries, &diagnostics(), 5.0, true).contains("2 analyzed file"));
+        assert!(
+            render_human(&entries, &diagnostics(), 5.0, true, totals).contains("2 analyzed file")
+        );
+        // Trimmed rows must not shrink the counts the summary line reports.
+        let shown = apply_display_limits(entries.clone(), Some(5.5), None, SortOrder::Crap);
+        assert!(
+            render_human(&shown, &diagnostics(), 5.0, false, totals)
+                .contains("1 of 2 function(s) exceed CRAP threshold 5.0.")
+        );
     }
 
     #[test]

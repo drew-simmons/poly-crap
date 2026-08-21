@@ -52,11 +52,11 @@ struct Cli {
     #[arg(long, value_name = "GLOB")]
     allow: Vec<String>,
 
-    /// Hide entries whose CRAP score is below this value.
+    /// Hide entries whose CRAP score is below this value. Does not affect the gates.
     #[arg(long)]
     min: Option<f64>,
 
-    /// Show at most this many entries.
+    /// Show at most this many entries. Does not affect the gates.
     #[arg(long)]
     top: Option<usize>,
 
@@ -158,7 +158,7 @@ fn collect_entries(cli: &Cli, config: &EffectiveConfig) -> Result<Collected> {
     let (analysis, diff) = analyze_sources(cli, config)?;
     warn_diagnostics(&analysis);
     let merged = merge_sources(analysis, config, diff.is_some())?;
-    let entries = filter_entries(merged.entries, &cli.path, config)?;
+    let entries = gate_entries(merged.entries, &cli.path, config)?;
     Ok(Collected {
         entries,
         diagnostics: merged.diagnostics,
@@ -306,19 +306,13 @@ fn warn_coverage_scope(merged: &poly_crap::MergeResult) {
     }
 }
 
-fn filter_entries(
+/// Entries the gates and the summary counts see: `--allow` applied, nothing else.
+fn gate_entries(
     entries: Vec<Entry>,
     root: &std::path::Path,
     config: &EffectiveConfig,
 ) -> Result<Vec<Entry>> {
-    report::filter_entries(
-        entries,
-        &config.allow,
-        root,
-        config.min,
-        config.top,
-        config.sort,
-    )
+    report::gate_entries(entries, &config.allow, root, config.sort)
 }
 
 fn render_report(
@@ -347,8 +341,9 @@ fn render_delta_report(
     diagnostics: ScopeDiagnostics,
 ) -> Result<(String, bool)> {
     let baseline_entries = report::filter_allowed(baseline::load(path)?, &config.allow, root)?;
-    let delta = baseline::compare(entries, &baseline_entries, config.epsilon, diagnostics);
+    let mut delta = baseline::compare(entries, &baseline_entries, config.epsilon, diagnostics);
     let failed = config.fail_regression && report::regression_failed(&delta);
+    report::limit_delta(&mut delta, config.min, config.top);
     let rendered = report::render_delta(&delta, config.format, config.summary)?;
     Ok((rendered, failed))
 }
@@ -361,12 +356,16 @@ fn render_absolute_report(
     let failed =
         config.fail_above && report::threshold_failed(&collected.entries, config.threshold);
     let selected_units = collected.entries.len();
+    let totals = report::Totals::new(&collected.entries, config.threshold);
+    let shown =
+        report::apply_display_limits(collected.entries, config.min, config.top, config.sort);
     let mut rendered = report::render_absolute(
-        collected.entries,
+        shown,
         collected.diagnostics,
         config.format,
         config.threshold,
         config.summary,
+        totals,
     )?;
     add_diff_summary(
         &mut rendered,
