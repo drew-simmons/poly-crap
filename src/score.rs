@@ -1,5 +1,5 @@
 /// Default CRAP threshold.
-pub const DEFAULT_THRESHOLD: f64 = 30.0;
+pub const DEFAULT_THRESHOLD: f64 = 5.0;
 
 /// Compute the Change Risk Anti-Patterns score.
 #[must_use]
