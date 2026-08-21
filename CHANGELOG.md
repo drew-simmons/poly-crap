@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/drew-simmons/poly-crap/compare/v0.3.0...v0.4.0) (2026-08-21)
+
+
+### Features
+
+* add poly-crap skill ([#15](https://github.com/drew-simmons/poly-crap/issues/15)) ([70dce81](https://github.com/drew-simmons/poly-crap/commit/70dce81ec67d26b912cb174633909f13d25999b2))
+
 ## [0.3.0](https://github.com/drew-simmons/poly-crap/compare/v0.2.0...v0.3.0) (2026-08-20)
 
 
