@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/drew-simmons/poly-crap/compare/v0.4.0...v0.5.0) (2026-08-21)
+
+
+### Features
+
+* dogfood poly-crap ([#17](https://github.com/drew-simmons/poly-crap/issues/17)) ([f3bc06a](https://github.com/drew-simmons/poly-crap/commit/f3bc06afc6ad0325250bce0671b779469b6be097))
+
 ## [0.4.0](https://github.com/drew-simmons/poly-crap/compare/v0.3.0...v0.4.0) (2026-08-21)
 
 
