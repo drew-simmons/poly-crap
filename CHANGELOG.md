@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/drew-simmons/poly-crap/compare/v0.5.0...v0.5.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* cargo release ([#19](https://github.com/drew-simmons/poly-crap/issues/19)) ([07da640](https://github.com/drew-simmons/poly-crap/commit/07da6407bb57e3f7a2bbe5bd07fb888f13f6e52d))
+
 ## [0.5.0](https://github.com/drew-simmons/poly-crap/compare/v0.4.0...v0.5.0) (2026-08-21)
 
 
