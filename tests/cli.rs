@@ -172,6 +172,34 @@ fn config_is_found_from_a_subdirectory_with_a_relative_path() {
 }
 
 #[test]
+fn display_limits_do_not_hide_threshold_failures_from_the_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir.path().join("app.py"),
+        "def simple():\n    return 0\n\ndef run(x):\n    if x:\n        if x > 1:\n            if x > 2:\n                return 1\n    return 0\n",
+    );
+    // `--min` and `--top` only choose printed rows. `run` scores above the
+    // threshold, so it has to fail the build even when no row survives, and
+    // the summary has to count both functions rather than what it printed.
+    for limit in [["--min", "1000"], ["--top", "1"]] {
+        cargo_bin_cmd!("poly-crap")
+            .args([
+                "--path",
+                dir.path().to_str().unwrap(),
+                "--missing",
+                "pessimistic",
+                "--threshold",
+                "5",
+                "--fail-above",
+            ])
+            .args(limit)
+            .assert()
+            .code(1)
+            .stdout(predicate::str::contains("1 of 2 function(s) exceed"));
+    }
+}
+
+#[test]
 fn display_limits_do_not_hide_regressions_from_the_gate() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("app.py");
