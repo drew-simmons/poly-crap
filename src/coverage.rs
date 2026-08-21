@@ -1,7 +1,7 @@
 use crate::model::{CoverageBasis, LineRange};
 use anyhow::{Context, Result, anyhow, bail};
-use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
+use quick_xml::{Reader, XmlVersion};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -422,7 +422,7 @@ fn decode_attribute(
     reader: &Reader<&[u8]>,
 ) -> Result<String> {
     attribute
-        .decode_and_unescape_value(reader.decoder())
+        .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
         .context("decoding XML attribute")
         .map(std::borrow::Cow::into_owned)
 }
