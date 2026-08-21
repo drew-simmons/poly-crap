@@ -57,8 +57,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-crap@0.4.3,cargo-llvm-cov@0.8.7
+          tool: cargo-llvm-cov@0.8.7
       - name: Generate coverage
         run: cargo llvm-cov --locked --all-targets --all-features --lcov --output-path lcov.info
       - name: Enforce CRAP score
-        run: cargo crap --lcov lcov.info --threshold 5 --fail-above
+        run: cargo run --locked -- --language rust --coverage lcov.info --threshold 5 --fail-above
