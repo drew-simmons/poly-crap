@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/drew-simmons/poly-crap/compare/v0.5.1...v0.6.0) (2026-08-24)
+
+
+### Features
+
+* auto-discover coverage reports at default locations ([#21](https://github.com/drew-simmons/poly-crap/issues/21)) ([c74bef2](https://github.com/drew-simmons/poly-crap/commit/c74bef23aecb177acde47b1f48e0364d6c1268d2))
+
 ## [0.5.1](https://github.com/drew-simmons/poly-crap/compare/v0.5.0...v0.5.1) (2026-08-21)
 
 
