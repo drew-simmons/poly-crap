@@ -133,9 +133,11 @@ unfamiliar codebase, or a report on the repo as it stands:
 python3 "$PC" scan
 ```
 
-Either way the script finds coverage reports on its own, runs the scan, and
-explains the exit code. Flags this script does not model itself are forwarded to
-poly-crap unchanged:
+Either way the script finds coverage reports on its own, and newer binaries
+search the same default locations themselves when none are passed (opt out
+with `--no-auto-coverage`). The script runs the scan and explains the exit
+code. Flags this script does not model itself are forwarded to poly-crap
+unchanged:
 
 ```sh
 # Fail the run (exit 1) when a function is over the threshold.
@@ -179,8 +181,8 @@ python3 "$PC" smoke
 ```
 
 Builds the binary, generates a six-language fixture repo with hand-written
-coverage and real Git history, then runs 45 assertions across every mode the
-CLI has, ending in `45/45 checks passed`. Exit 1 if any check failed. Run this
+coverage and real Git history, then runs 51 assertions across every mode the
+CLI has, ending in `51/51 checks passed`. Exit 1 if any check failed. Run this
 after touching `src/analysis.rs`, `src/merge.rs`, `src/report.rs`,
 `src/baseline.rs`, `src/coverage.rs`, or `src/git_diff.rs`.
 
@@ -198,6 +200,7 @@ never whatever is on PATH.
 | 7 | `--diff-base` narrows to changed functions | `src/git_diff.rs` |
 | 8 | `--baseline` regression detection | `src/baseline.rs` |
 | 9 | Exit codes 0/1/2 and rejected flag pairs | `src/main.rs` |
+| 10 | Coverage auto-discovery and `--no-auto-coverage` | `src/coverage.rs`, `src/main.rs` |
 
 Scenario 1 pins exact complexity numbers — python `risky` 9.0, java 8.0, the
 other four 7.0 — so a change to the tree-sitter decision rules shows up as a
@@ -273,8 +276,11 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 ## Making a coverage report
 
 Poly-crap reads reports; it never runs your tests. Without one, every function
-counts as 0% covered and the scores are meaningless. `check` prints the right
-command for your stack:
+counts as 0% covered and the scores are meaningless. Both the script and newer
+binaries look for reports on their own — at the locations in the Report column
+below, plus `lcov.info` and `coverage/coverage.lcov` (`COVERAGE_CANDIDATES` in
+the script, `DEFAULT_REPORT_LOCATIONS` in `src/coverage.rs`). `check` prints
+the right command for your stack:
 
 | Marker | Stack | Command | Report |
 | --- | --- | --- | --- |
@@ -298,9 +304,12 @@ The rest come from poly-crap's README and are printed as suggestions. Neither
 ## Gotchas
 
 - **No coverage report means every function scores as 0% covered.** The scan
-  still succeeds and the numbers look alarming for no reason. `scan` prints
-  `warning: no coverage report` to stderr when it finds none — do not read a
-  report past that warning as a real result.
+  still succeeds and the numbers look alarming for no reason. Both `scan` and
+  newer binaries print a `warning: no coverage report` line to stderr when
+  they find none — do not read a report past that warning as a real result.
+  When the binary discovers a report itself it says so with
+  `note: using discovered coverage report(s)` on stderr;
+  `--no-auto-coverage` turns that search off.
 - **Exit 0 does not mean clean.** Poly-crap only fails a run when you ask for a
   gate. A scan reporting `1 of 2 function(s) exceed CRAP threshold 5.0` still
   exits 0 without `--gate`; `scan` appends `(no gate requested — add --gate to

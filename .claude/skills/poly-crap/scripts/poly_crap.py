@@ -87,6 +87,9 @@ STACKS = [
 
 # Where coverage reports usually land. Checked in order; all hits are passed to
 # poly-crap, which merges repeated --coverage flags and sniffs each format.
+# Newer binaries search the same list themselves when no --coverage is given
+# (DEFAULT_REPORT_LOCATIONS in src/coverage.rs — keep the two lists matching);
+# passing explicit flags here keeps older binaries behaving the same.
 COVERAGE_CANDIDATES = [
     "coverage.lcov",
     "lcov.info",
@@ -222,7 +225,7 @@ def cmd_check(ns) -> int:
             "coverage:   none found — the scan will treat every function as 0% covered"
         )
     if checkout:
-        print("dev:        `smoke` available (build + 45 assertions)")
+        print("dev:        `smoke` available (build + 51 assertions)")
     return 0 if binary else 1
 
 
@@ -875,6 +878,53 @@ def scenario_baseline(c: Checks) -> None:
         git("checkout", "-q", "feature")
 
 
+def ts_risky_coverage(*args):
+    """Coverage of the TypeScript `risky` fixture function under the given flags."""
+    report = crap_json(*args)
+    return next(
+        e["coverage"]
+        for e in report["entries"]
+        if e["language"] == "typescript" and e["symbol"] == "risky"
+    )
+
+
+def scenario_auto_discovery(c: Checks) -> None:
+    print("\n[10] the binary auto-discovers coverage reports")
+    # cov.lcov is deliberately not a default location, so a bare run warns.
+    _, _, stderr = crap()
+    c.eq(
+        "no report at a default location -> stderr warning",
+        "warning: no coverage report found" in stderr,
+        True,
+    )
+    # A report at a default location, fully covering src/a.ts — unlike
+    # cov.lcov's 60%, so the assertions can tell which report was read.
+    (FIXTURE / "coverage.lcov").write_text(
+        "SF:src/a.ts\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nDA:5,1\nend_of_record\n"
+    )
+    try:
+        _, _, stderr = crap()
+        c.eq(
+            "discovery is noted on stderr",
+            "note: using discovered coverage report" in stderr,
+            True,
+        )
+        c.eq("the note names the report", "coverage.lcov" in stderr, True)
+        c.eq("the discovered report is merged", ts_risky_coverage(), 100.0)
+        c.eq(
+            "explicit --coverage wins over discovery",
+            round(ts_risky_coverage("--coverage", FIXTURE / "cov.lcov"), 1),
+            60.0,
+        )
+        c.eq(
+            "--no-auto-coverage ignores the report",
+            ts_risky_coverage("--no-auto-coverage"),
+            None,
+        )
+    finally:
+        (FIXTURE / "coverage.lcov").unlink()
+
+
 def scenario_exit_codes(c: Checks) -> None:
     print("\n[9] exit codes and rejected flag combinations")
     c.eq("clean run exits 0", crap()[0], 0)
@@ -911,6 +961,7 @@ def cmd_smoke(ns) -> int:
         scenario_diff,
         scenario_baseline,
         scenario_exit_codes,
+        scenario_auto_discovery,
     ):
         fn(c)
     print(f"\n{c.count - len(c.failures)}/{c.count} checks passed")

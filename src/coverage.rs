@@ -3,9 +3,33 @@ use anyhow::{Context, Result, anyhow, bail};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub type CoverageMap = HashMap<PathBuf, FileCoverage>;
+
+/// Report locations coverage tools write to by default, relative to the scan
+/// root and tried in this order. The skill wrapper's `COVERAGE_CANDIDATES` in
+/// `.claude/skills/poly-crap/scripts/poly_crap.py` mirrors this list; change
+/// both together.
+pub const DEFAULT_REPORT_LOCATIONS: &[&str] = &[
+    "coverage.lcov",
+    "lcov.info",
+    "coverage/lcov.info",
+    "coverage/coverage.lcov",
+    "coverage.out",
+    "target/site/jacoco/jacoco.xml",
+    "build/reports/jacoco/test/jacocoTestReport.xml",
+];
+
+/// Every default-location report present under `root`, in list order.
+#[must_use]
+pub fn discover_reports(root: &Path) -> Vec<PathBuf> {
+    DEFAULT_REPORT_LOCATIONS
+        .iter()
+        .map(|location| root.join(location))
+        .filter(|path| path.is_file())
+        .collect()
+}
 type CoverageDetector = fn(&str) -> bool;
 type CoverageParser = fn(&str) -> Result<CoverageMap>;
 
@@ -502,5 +526,21 @@ mod tests {
     #[test]
     fn rejects_unknown_format() {
         assert!(parse_coverage("not coverage").is_err());
+    }
+
+    #[test]
+    fn discovers_reports_at_default_locations_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(discover_reports(dir.path()).is_empty());
+        std::fs::create_dir_all(dir.path().join("coverage")).unwrap();
+        std::fs::write(dir.path().join("coverage/lcov.info"), "").unwrap();
+        std::fs::write(dir.path().join("coverage.out"), "").unwrap();
+        assert_eq!(
+            discover_reports(dir.path()),
+            [
+                dir.path().join("coverage/lcov.info"),
+                dir.path().join("coverage.out"),
+            ]
+        );
     }
 }

@@ -62,6 +62,23 @@ Poly-crap detects LCOV, Go cover profiles, and JaCoCo XML from their contents.
 Pass `--coverage` more than once to merge reports. The tool reads reports but
 does not run tests, builds, or report converters.
 
+### Coverage auto-discovery
+
+When neither the command line nor `.poly-crap.toml` names a report, poly-crap
+searches `--path` for the files coverage tools write by default:
+`coverage.lcov`, `lcov.info`, `coverage/lcov.info`, `coverage/coverage.lcov`,
+`coverage.out`, `target/site/jacoco/jacoco.xml`, and
+`build/reports/jacoco/test/jacocoTestReport.xml`. It uses every report it
+finds and names them on stderr:
+
+```sh
+poly-crap --diff-base main
+```
+
+When it finds none, it warns on stderr that every function follows the
+`--missing` policy. Pass `--no-auto-coverage` to skip the search and use only
+reports named explicitly.
+
 ### Create coverage reports
 
 Rust:

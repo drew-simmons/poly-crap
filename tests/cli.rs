@@ -275,6 +275,94 @@ fn allow_path_globs_suppress_reported_entries() {
 }
 
 #[test]
+fn coverage_is_discovered_at_default_locations() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir.path().join("app.py"),
+        "def run(x):\n    if x:\n        return 1\n    return 0\n",
+    );
+    write(
+        &dir.path().join("coverage/lcov.info"),
+        "SF:app.py\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nend_of_record\n",
+    );
+    let output = cargo_bin_cmd!("poly-crap")
+        .args(["--path", dir.path().to_str().unwrap(), "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("note: using discovered coverage report(s):"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("lcov.info"), "{stderr}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["entries"][0]["coverage"], 100.0, "{report}");
+}
+
+#[test]
+fn explicit_coverage_and_opt_out_disable_discovery() {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("app.py"), "def run(x):\n    return x\n");
+    write(
+        &dir.path().join("coverage.lcov"),
+        "SF:app.py\nDA:1,1\nDA:2,1\nend_of_record\n",
+    );
+    let uncovered = dir.path().join("other.lcov");
+    write(&uncovered, "SF:app.py\nDA:1,0\nDA:2,0\nend_of_record\n");
+
+    // --no-auto-coverage ignores the discoverable report and stays silent.
+    let output = cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--no-auto-coverage",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("coverage report"), "{stderr}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["entries"][0]["coverage"], Value::Null, "{report}");
+
+    // An explicit --coverage wins over the discoverable report.
+    let output = cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--coverage",
+            uncovered.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("discovered"), "{stderr}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["entries"][0]["coverage"], 0.0, "{report}");
+}
+
+#[test]
+fn missing_coverage_report_warns_on_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("app.py"), "def run(x):\n    return x\n");
+    cargo_bin_cmd!("poly-crap")
+        .args(["--path", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "warning: no coverage report found; every function follows the --missing policy (pessimistic)",
+        ));
+}
+
+#[test]
 fn malformed_coverage_exits_two() {
     let dir = tempfile::tempdir().unwrap();
     write(&dir.path().join("app.js"), "function run() {}\n");
