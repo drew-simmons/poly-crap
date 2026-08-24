@@ -7,7 +7,8 @@ use poly_crap::config::{self, EffectiveConfig};
 use poly_crap::model::{Entry, Language, MissingCoveragePolicy, ScopeDiagnostics};
 use poly_crap::report::{self, OutputFormat, SortOrder};
 use poly_crap::{
-    Analysis, analyze_paths, analyze_tree, merge, merge_selected, parse_coverage_files,
+    Analysis, analyze_paths, analyze_tree, discover_reports, merge, merge_selected,
+    parse_coverage_files,
 };
 use std::io::Write;
 use std::path::PathBuf;
@@ -29,8 +30,13 @@ struct Cli {
     language: Vec<Language>,
 
     /// LCOV, Go cover profile, or JaCoCo XML file. May be repeated.
+    /// When omitted, default report locations under --path are searched.
     #[arg(long, value_name = "FILE")]
     coverage: Vec<PathBuf>,
+
+    /// Do not search default report locations when no coverage is given.
+    #[arg(long)]
+    no_auto_coverage: bool,
 
     /// CRAP score above which a function fails the absolute gate.
     #[arg(long)]
@@ -168,7 +174,7 @@ fn collect_entries(cli: &Cli, config: &EffectiveConfig) -> Result<Collected> {
 
 fn effective_config(cli: &Cli) -> Result<EffectiveConfig> {
     let file_config = config::load(&cli.path)?;
-    Ok(EffectiveConfig::new(
+    let mut effective = EffectiveConfig::new(
         file_config,
         cli.language.clone(),
         cli.coverage.clone(),
@@ -186,7 +192,36 @@ fn effective_config(cli: &Cli) -> Result<EffectiveConfig> {
         cli.fail_regression,
         cli.epsilon,
         cli.jobs,
-    ))
+    );
+    discover_missing_coverage(cli, &mut effective);
+    Ok(effective)
+}
+
+/// Fill in default-location reports when the CLI and the config name none.
+fn discover_missing_coverage(cli: &Cli, config: &mut EffectiveConfig) {
+    if cli.no_auto_coverage || !config.coverage.is_empty() {
+        return;
+    }
+    config.coverage = discover_reports(&cli.path);
+    note_discovery(&config.coverage, config.missing);
+}
+
+fn note_discovery(reports: &[PathBuf], missing: MissingCoveragePolicy) {
+    if reports.is_empty() {
+        let policy = format!("{missing:?}").to_lowercase();
+        eprintln!(
+            "warning: no coverage report found; every function follows the --missing policy ({policy})"
+        );
+    } else {
+        let listed: Vec<_> = reports
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        eprintln!(
+            "note: using discovered coverage report(s): {}",
+            listed.join(", ")
+        );
+    }
 }
 
 fn analyze_sources(
