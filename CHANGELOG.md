@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.7.0](https://github.com/drew-simmons/poly-crap/compare/v0.6.0...v0.7.0) (2026-09-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* tighten complexity rules, qualify more symbols, and read Cobertura reports ([#33](https://github.com/drew-simmons/poly-crap/issues/33))
+
+### Features
+
+* list only failing functions in human output and name their uncovered lines ([#27](https://github.com/drew-simmons/poly-crap/issues/27)) ([254ad1c](https://github.com/drew-simmons/poly-crap/commit/254ad1cd417bbd22f074386f0cc63c7a1eb6af49))
+* tighten complexity rules, qualify more symbols, and read Cobertura reports ([#33](https://github.com/drew-simmons/poly-crap/issues/33)) ([a0181a2](https://github.com/drew-simmons/poly-crap/commit/a0181a2ad7a0e00c356c5e0b9f5fbf1c6fd373d6))
+* warn when a coverage report is older than the source it covers ([#32](https://github.com/drew-simmons/poly-crap/issues/32)) ([9a94982](https://github.com/drew-simmons/poly-crap/commit/9a9498274dbc1ada761f255a4211300324599e26))
+
+
+### Bug Fixes
+
+* gate baseline runs on --fail-above and reject file-name-only coverage matches ([#26](https://github.com/drew-simmons/poly-crap/issues/26)) ([46ed871](https://github.com/drew-simmons/poly-crap/commit/46ed8719036ec12b4b1e8816cb3c3c1d4f7f2a40))
+* stop reporting a line shift within a file as a moved function ([#29](https://github.com/drew-simmons/poly-crap/issues/29)) ([21ed551](https://github.com/drew-simmons/poly-crap/commit/21ed5518141860e2bd934c55a32618ba24a57f51))
+
 ## [0.6.0](https://github.com/drew-simmons/poly-crap/compare/v0.5.1...v0.6.0) (2026-08-24)
 
 
