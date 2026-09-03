@@ -11,8 +11,9 @@ use poly_crap::{
     parse_coverage_files,
 };
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::SystemTime;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -165,6 +166,7 @@ struct Collected {
 fn collect_entries(cli: &Cli, config: &EffectiveConfig) -> Result<Collected> {
     let (analysis, diff) = analyze_sources(cli, config)?;
     warn_diagnostics(&analysis);
+    warn_stale_coverage(&config.coverage, &analysis);
     let merged = merge_sources(analysis, config, diff.is_some())?;
     let entries = gate_entries(merged.entries, &cli.path, config)?;
     Ok(Collected {
@@ -308,6 +310,38 @@ fn warn_diagnostics(analysis: &Analysis) {
     for diagnostic in &analysis.diagnostics {
         eprintln!("warning: {}", diagnostic.message);
     }
+}
+
+/// Warn when a report predates the source it is meant to describe.
+///
+/// Auto-discovery makes it easy to score today's code against last week's
+/// report. Modification times are a rough guide, but a report older than a
+/// file it should cover cannot be right, and the mistake is otherwise silent.
+fn warn_stale_coverage(reports: &[PathBuf], analysis: &Analysis) {
+    let newest = newest_modification(analysis.units.iter().map(|unit| unit.file.as_path()));
+    for report in reports.iter().filter(|report| is_older(report, newest)) {
+        eprintln!(
+            "warning: coverage report {} is older than the source it covers; regenerate it",
+            report.display()
+        );
+    }
+}
+
+fn newest_modification<'a>(paths: impl Iterator<Item = &'a Path>) -> Option<SystemTime> {
+    paths.filter_map(modification_time).max()
+}
+
+fn is_older(report: &Path, newest: Option<SystemTime>) -> bool {
+    match (modification_time(report), newest) {
+        (Some(report), Some(source)) => report < source,
+        _ => false,
+    }
+}
+
+fn modification_time(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
 }
 
 fn merge_sources(
@@ -547,5 +581,36 @@ mod tests {
             parse_and_run(parse(&["--not-an-option"])),
             ExitCode::from(2)
         );
+    }
+
+    fn set_modified(path: &Path, time: SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_report_older_than_the_source_is_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("app.py");
+        let report = dir.path().join("coverage.lcov");
+        std::fs::write(&source, "def run(x):\n    return x\n").unwrap();
+        std::fs::write(&report, "SF:app.py\nDA:1,1\nend_of_record\n").unwrap();
+        let newest = newest_modification([source.as_path()].into_iter());
+        assert!(newest.is_some());
+
+        let old = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        set_modified(&report, old);
+        assert!(is_older(&report, newest));
+
+        // A report at least as new as the source is fine. So is one that is
+        // missing, or a scan that found no source to compare against.
+        set_modified(&report, SystemTime::now());
+        assert!(!is_older(&report, newest));
+        assert!(!is_older(&dir.path().join("missing.lcov"), newest));
+        assert!(!is_older(&report, None));
     }
 }

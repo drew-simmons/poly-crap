@@ -73,8 +73,10 @@ impl Language {
 }
 
 impl fmt::Display for Language {
+    /// Honors width and alignment, so a `{:<10}` column lines up. `write_str`
+    /// would ignore them and jag the human table.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+        f.pad(self.as_str())
     }
 }
 
@@ -162,6 +164,12 @@ pub struct Entry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_pads_to_the_requested_width() {
+        assert_eq!(format!("{:<10}|", Language::Go), "go        |");
+        assert_eq!(format!("{}", Language::TypeScript), "typescript");
+    }
 
     #[test]
     fn parses_language_names_and_aliases() {

@@ -210,8 +210,9 @@ warns that every function will follow the `--missing` policy, which by default
 scores it as 0% covered. Pass `--no-auto-coverage` to skip the search.
 
 > [!WARNING]
-> Poly-crap does not check that a report is newer than the source. A report
-> left over from last week scores today's code. Regenerate it before you scan.
+> A report left over from last week scores today's code. Poly-crap warns on
+> stderr when a report is older than a source file it covers, but it still
+> scores the run. Regenerate the report before you scan.
 
 ### Merging reports and matching paths
 
@@ -607,7 +608,9 @@ poly-crap prints, and see
 TypeScript, make sure the report names `.ts` files, not compiled `.js`.
 
 **The scores look wrong after a refactor.** The report is stale. Poly-crap
-scores today's source against whatever report it finds; regenerate the report.
+scores today's source against whatever report it finds, and warns
+`is older than the source it covers` when the file dates say so. Regenerate
+the report.
 
 **`none of the N candidate source files parsed successfully`.** Every file
 of a language failed to parse, which usually means the files are not what
