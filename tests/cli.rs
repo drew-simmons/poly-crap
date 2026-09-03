@@ -497,6 +497,36 @@ fn missing_coverage_report_warns_on_stderr() {
 }
 
 #[test]
+fn stale_coverage_report_warns_on_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let report = dir.path().join("coverage.lcov");
+    write(&report, "SF:app.py\nDA:1,1\nDA:2,1\nend_of_record\n");
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    fs::File::options()
+        .write(true)
+        .open(&report)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    write(&dir.path().join("app.py"), "def run(x):\n    return x\n");
+    // The report predates the source, so the run says so but still scores.
+    cargo_bin_cmd!("poly-crap")
+        .args(["--path", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "is older than the source it covers",
+        ));
+    // Rewriting the report makes it newer than the source, and the warning goes.
+    write(&report, "SF:app.py\nDA:1,1\nDA:2,1\nend_of_record\n");
+    cargo_bin_cmd!("poly-crap")
+        .args(["--path", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("older than").not());
+}
+
+#[test]
 fn malformed_coverage_exits_two() {
     let dir = tempfile::tempdir().unwrap();
     write(&dir.path().join("app.js"), "function run() {}\n");

@@ -561,7 +561,7 @@ fn render_sarif(entries: &[Entry], threshold: f64) -> Result<String> {
                 "level": "warning",
                 "message": {"text": format!("{} has CRAP {:.1} (CC {:.1}, coverage {})", entry.symbol, entry.score, entry.complexity, entry.coverage.map_or_else(|| "N/A".into(), |v| format!("{v:.1}%")))},
                 "locations": [{"physicalLocation": {
-                    "artifactLocation": {"uri": normalize_path(&entry.file)},
+                    "artifactLocation": {"uri": sarif_uri(&entry.file)},
                     "region": {"startLine": entry.start_line, "endLine": entry.end_line}
                 }}]
             })
@@ -583,6 +583,19 @@ fn render_sarif(entries: &[Entry], threshold: f64) -> Result<String> {
         }]
     }))
     .context("serializing SARIF report")
+}
+
+/// A SARIF artifact URI: forward slashes, and no `./` prefix.
+///
+/// `--path .` reports files as `./src/a.rs`. SARIF consumers such as GitHub
+/// code scanning expect a URI relative to the repository root, and `./` is
+/// noise at best there.
+fn sarif_uri(path: &Path) -> String {
+    let normalized = normalize_path(path);
+    normalized
+        .strip_prefix("./")
+        .map_or(normalized.as_str(), |relative| relative)
+        .to_string()
 }
 
 #[must_use]
@@ -809,6 +822,19 @@ mod tests {
         let rendered = render_sarif(&[entry(6.0), entry(3.0)], 5.0).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
         assert_eq!(parsed["runs"][0]["results"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn sarif_paths_drop_the_current_directory_prefix() {
+        let mut failing = entry(6.0);
+        failing.file = PathBuf::from("./src/a.rs");
+        let rendered = render_sarif(&[failing], 5.0).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        let uri = &parsed["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]
+            ["uri"];
+        assert_eq!(uri, "src/a.rs");
+        assert_eq!(sarif_uri(Path::new("src/a.rs")), "src/a.rs");
+        assert_eq!(sarif_uri(Path::new("/repo/src/a.rs")), "/repo/src/a.rs");
     }
 
     #[test]
