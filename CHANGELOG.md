@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/drew-simmons/poly-crap/compare/v0.7.0...v0.8.0) (2026-09-03)
+
+
+### Features
+
+* color and align human output ([#35](https://github.com/drew-simmons/poly-crap/issues/35)) ([87cbfd9](https://github.com/drew-simmons/poly-crap/commit/87cbfd99d3dc1b2095dec0c4fb0a5f121d3b7f1d))
+
 ## [0.7.0](https://github.com/drew-simmons/poly-crap/compare/v0.6.0...v0.7.0) (2026-09-03)
 
 
