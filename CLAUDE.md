@@ -96,6 +96,13 @@ path is itself a bare file name (`TRUSTED_SUFFIX` in `merge.rs`), so
 both the reported path and its
 root-relative form for the same reason.
 
+**Baseline matching drops the line number after the first pass.**
+`baseline::compare` matches exactly first, then by language, symbol, and a
+path suffix of at least two components, then by a symbol unique on both sides
+as a move. An edit above a function shifts its start line, so the second pass
+must not key on it, or every function below an added import reports as
+`moved`. Ambiguous candidates stay `new` rather than being guessed at.
+
 **JSON output is a published contract.** `schemas/report-v1.json` and
 `schemas/delta-v1.json` are validated against real output in `tests/cli.rs`
 with `jsonschema`. Changing a serialized field means updating the schema in the

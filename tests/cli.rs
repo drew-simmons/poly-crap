@@ -332,6 +332,50 @@ fn display_limits_do_not_hide_regressions_from_the_gate() {
 }
 
 #[test]
+fn an_edit_above_a_function_does_not_report_it_as_moved() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("app.py");
+    let baseline = dir.path().join("baseline.json");
+    let body = "def one(x):\n    if x:\n        return 1\n    return 0\n\ndef two(x):\n    if x:\n        return 1\n    return 0\n";
+    write(&source, body);
+    cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+            "--output",
+            baseline.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    // One import line pushes both functions down. Neither function changed,
+    // so neither may show up as moved, new, or removed.
+    write(&source, &format!("import os\n\n{body}"));
+    let output = cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--baseline",
+            baseline.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let statuses: Vec<_> = report["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(statuses, ["unchanged", "unchanged"], "{report}");
+    assert!(report["removed"].as_array().unwrap().is_empty(), "{report}");
+}
+
+#[test]
 fn allow_path_globs_suppress_reported_entries() {
     let dir = tempfile::tempdir().unwrap();
     write(
