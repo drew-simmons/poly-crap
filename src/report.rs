@@ -1,11 +1,14 @@
-use crate::baseline::{DeltaReport, DeltaStatus};
+use crate::baseline::{DeltaEntry, DeltaReport, DeltaStatus, RemovedEntry};
 use crate::model::{Entry, LineRange, ScopeDiagnostics};
+use crate::style::{self, BAD, DIM, GOOD, HEADER, MOVED, NOTE, Theme, WARN};
+use crate::table::{Cell, Column, Table};
+use anstyle::Style;
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::io::Write;
+use std::fmt::Write as _;
 use std::path::Path;
 
 const REPORT_SCHEMA: &str =
@@ -311,22 +314,24 @@ impl DeltaTotals {
     }
 }
 
+/// Settings the renderers read besides the rows: the threshold rows are
+/// judged against, whether to print rows at all, and how to color them.
+#[derive(Debug, Clone, Copy)]
+pub struct Presentation {
+    pub threshold: f64,
+    pub summary: bool,
+    pub theme: Theme,
+}
+
 pub fn render_absolute(
     entries: Vec<Entry>,
     diagnostics: ScopeDiagnostics,
     format: OutputFormat,
-    threshold: f64,
-    summary: bool,
+    options: Presentation,
     totals: Totals,
 ) -> Result<String> {
     match format {
-        OutputFormat::Human => Ok(render_human(
-            &entries,
-            &diagnostics,
-            threshold,
-            summary,
-            totals,
-        )),
+        OutputFormat::Human => Ok(render_human(&entries, &diagnostics, options, totals)),
         OutputFormat::Json => serde_json::to_string_pretty(&ReportEnvelope {
             schema: REPORT_SCHEMA.into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -334,19 +339,18 @@ pub fn render_absolute(
             diagnostics,
         })
         .context("serializing JSON report"),
-        OutputFormat::Sarif => render_sarif(&entries, threshold),
+        OutputFormat::Sarif => render_sarif(&entries, options.threshold),
     }
 }
 
 pub fn render_delta(
     report: &DeltaReport,
     format: OutputFormat,
-    threshold: f64,
-    summary: bool,
+    options: Presentation,
     totals: DeltaTotals,
 ) -> Result<String> {
     match format {
-        OutputFormat::Human => Ok(render_delta_human(report, threshold, summary, totals)),
+        OutputFormat::Human => Ok(render_delta_human(report, options, totals)),
         OutputFormat::Json => serde_json::to_string_pretty(&DeltaEnvelope {
             schema: DELTA_SCHEMA,
             version: env!("CARGO_PKG_VERSION"),
@@ -359,96 +363,156 @@ pub fn render_delta(
     }
 }
 
+/// Leading space before every table line and the hidden-rows line.
+const INDENT: &str = "  ";
+
 fn render_human(
     entries: &[Entry],
     diagnostics: &ScopeDiagnostics,
-    threshold: f64,
-    summary: bool,
+    options: Presentation,
     totals: Totals,
 ) -> String {
-    let mut output = Vec::new();
-    render_crap_section(&mut output, entries, threshold, summary, totals);
-    append_scope_summary(&mut output, diagnostics);
-    String::from_utf8(output).expect("human report is UTF-8")
+    let mut output = String::new();
+    render_crap_section(&mut output, entries, options, totals);
+    append_scope_summary(&mut output, diagnostics, options.theme);
+    output
 }
 
 fn render_crap_section(
-    output: &mut Vec<u8>,
+    output: &mut String,
     entries: &[Entry],
-    threshold: f64,
-    summary: bool,
+    options: Presentation,
     totals: Totals,
 ) {
-    writeln!(output, "CRAP results").unwrap();
-    if !summary {
-        render_crap_rows(output, entries, totals);
+    push_line(output, options.theme.paint(HEADER, "CRAP results"));
+    if !options.summary {
+        render_crap_rows(output, entries, options, totals);
     }
-    append_threshold_summary(output, totals, threshold);
+    append_threshold_summary(output, totals, options.threshold, options.theme);
 }
 
-fn render_crap_rows(output: &mut Vec<u8>, entries: &[Entry], totals: Totals) {
-    writeln!(
-        output,
-        "  CRAP     CC  Coverage  Language    Symbol  Location  Uncovered"
-    )
-    .unwrap();
-    for entry in entries {
-        render_crap_entry(output, entry);
+fn render_crap_rows(output: &mut String, entries: &[Entry], options: Presentation, totals: Totals) {
+    let table = crap_table(entries, options.threshold);
+    if !table.is_empty() {
+        output.push_str(&table.render(options.theme, INDENT));
     }
-    append_hidden_rows(output, totals.total.saturating_sub(entries.len()));
+    let hidden = totals.total.saturating_sub(entries.len());
+    append_hidden_rows(output, entries.len(), hidden, options.theme);
+}
+
+fn crap_table(entries: &[Entry], threshold: f64) -> Table {
+    let mut table = Table::new(vec![
+        Column::right("CRAP"),
+        Column::right("CC"),
+        Column::right("Coverage"),
+        Column::left("Language"),
+        Column::left("Symbol"),
+        Column::left("Location"),
+        Column::left("Uncovered"),
+    ]);
+    for entry in entries {
+        table.push(crap_row(entry, threshold));
+    }
+    table
+}
+
+fn crap_row(entry: &Entry, threshold: f64) -> Vec<Cell> {
+    vec![
+        Cell::styled(
+            format!("{:.1}", entry.score),
+            score_style(entry.score, threshold),
+        ),
+        Cell::plain(format!("{:.1}", entry.complexity)),
+        Cell::styled(
+            coverage_text(entry.coverage),
+            coverage_style(entry.coverage),
+        ),
+        Cell::plain(entry.language.as_str()),
+        Cell::plain(entry.symbol.as_str()),
+        Cell::plain(location(&entry.file, entry.start_line)),
+        Cell::plain(format_ranges(&entry.uncovered)),
+    ]
+}
+
+fn location(file: &Path, line: usize) -> String {
+    format!("{}:{line}", file.display())
+}
+
+/// A score at least this share of the threshold is marked as close to failing.
+const NEAR_THRESHOLD: f64 = 0.8;
+
+fn score_style(score: f64, threshold: f64) -> Style {
+    if score > threshold {
+        BAD
+    } else if score >= threshold * NEAR_THRESHOLD {
+        WARN
+    } else {
+        GOOD
+    }
+}
+
+/// Missing coverage reads as a problem to fix, so it shares the lowest tier.
+fn coverage_style(coverage: Option<f64>) -> Style {
+    coverage.map_or(BAD, coverage_tier)
+}
+
+fn coverage_tier(percent: f64) -> Style {
+    if percent >= 80.0 {
+        GOOD
+    } else if percent >= 50.0 {
+        WARN
+    } else {
+        BAD
+    }
+}
+
+fn coverage_text(coverage: Option<f64>) -> String {
+    coverage.map_or_else(|| "N/A".into(), |value| format!("{value:.1}%"))
 }
 
 /// Say how many rows the display limits dropped, so a short table is not
 /// mistaken for a short report.
-fn append_hidden_rows(output: &mut Vec<u8>, hidden: usize) {
-    if hidden > 0 {
-        writeln!(
-            output,
-            "  {hidden} more function(s) not shown; adjust --min or --top to list them."
-        )
-        .unwrap();
+fn append_hidden_rows(output: &mut String, shown: usize, hidden: usize, theme: Theme) {
+    if hidden == 0 {
+        return;
     }
+    let noun = if shown > 0 {
+        "more function"
+    } else {
+        "function"
+    };
+    let line = format!(
+        "{} not shown; adjust --min or --top to list them.",
+        style::count(hidden, noun)
+    );
+    push_line(output, format!("{INDENT}{}", theme.paint(DIM, line)));
 }
 
-fn append_threshold_summary(output: &mut Vec<u8>, totals: Totals, threshold: f64) {
-    writeln!(
-        output,
-        "{} of {} function(s) exceed CRAP threshold {threshold:.1}.",
-        totals.failures, totals.total
-    )
-    .unwrap();
+fn append_threshold_summary(output: &mut String, totals: Totals, threshold: f64, theme: Theme) {
+    let line = format!(
+        "{} of {} {} CRAP threshold {threshold:.1}.",
+        totals.failures,
+        style::count(totals.total, "function"),
+        exceed_verb(totals.failures)
+    );
+    push_line(output, theme.paint(verdict_style(totals.failures), line));
 }
 
-fn render_crap_entry(output: &mut Vec<u8>, entry: &Entry) {
-    let coverage = entry
-        .coverage
-        .map_or_else(|| "N/A".into(), |value| format!("{value:.1}%"));
-    writeln!(
-        output,
-        "  {:>7.1}  {:>5.1}  {:>8}  {:<10}  {}  {}:{}{}",
-        entry.score,
-        entry.complexity,
-        coverage,
-        entry.language,
-        entry.symbol,
-        entry.file.display(),
-        entry.start_line,
-        uncovered_cell(&entry.uncovered)
-    )
-    .unwrap();
+/// The verb agrees with the failure count: `1 of 3 functions exceeds`.
+fn exceed_verb(failures: usize) -> &'static str {
+    if failures == 1 { "exceeds" } else { "exceed" }
+}
+
+fn verdict_style(failures: usize) -> Style {
+    if failures > 0 { BAD } else { GOOD }
+}
+
+fn push_line(output: &mut String, line: impl std::fmt::Display) {
+    writeln!(output, "{line}").expect("writing to a String cannot fail");
 }
 
 /// Most uncovered ranges one row lists before it says how many more there are.
 const MAX_RANGES: usize = 6;
-
-/// The uncovered column with its separator, or nothing when there is no
-/// uncovered line to point at.
-fn uncovered_cell(ranges: &[LineRange]) -> String {
-    if ranges.is_empty() {
-        return String::new();
-    }
-    format!("  {}", format_ranges(ranges))
-}
 
 fn format_ranges(ranges: &[LineRange]) -> String {
     let mut listed: Vec<_> = ranges.iter().take(MAX_RANGES).map(format_range).collect();
@@ -466,89 +530,144 @@ fn format_range(range: &LineRange) -> String {
     }
 }
 
-fn render_delta_human(
-    report: &DeltaReport,
-    threshold: f64,
-    summary: bool,
-    totals: DeltaTotals,
-) -> String {
-    let mut output = Vec::new();
-    writeln!(output, "Changes since baseline").unwrap();
-    if !summary {
-        render_delta_rows(&mut output, report);
+fn render_delta_human(report: &DeltaReport, options: Presentation, totals: DeltaTotals) -> String {
+    let mut output = String::new();
+    push_line(
+        &mut output,
+        options.theme.paint(HEADER, "Changes since baseline"),
+    );
+    if !options.summary {
+        render_delta_rows(&mut output, report, options);
     }
-    writeln!(output, "{} regression(s) found.", totals.regressions).unwrap();
-    append_threshold_summary(&mut output, totals.scores, threshold);
-    append_scope_summary(&mut output, &report.diagnostics);
-    String::from_utf8(output).expect("human report is UTF-8")
+    append_regression_summary(&mut output, totals.regressions, options.theme);
+    append_threshold_summary(&mut output, totals.scores, options.threshold, options.theme);
+    append_scope_summary(&mut output, &report.diagnostics, options.theme);
+    output
 }
 
-fn render_delta_rows(output: &mut Vec<u8>, report: &DeltaReport) {
-    writeln!(
-        output,
-        "  Status     Score    Delta  Language    Symbol  Location  Uncovered"
-    )
-    .unwrap();
+fn render_delta_rows(output: &mut String, report: &DeltaReport, options: Presentation) {
+    let table = delta_table(report, options.threshold);
+    if !table.is_empty() {
+        output.push_str(&table.render(options.theme, INDENT));
+    }
+}
+
+fn delta_table(report: &DeltaReport, threshold: f64) -> Table {
+    let mut table = Table::new(vec![
+        Column::left("Status"),
+        Column::right("Score"),
+        Column::right("Delta"),
+        Column::left("Language"),
+        Column::left("Symbol"),
+        Column::left("Location"),
+        Column::left("Uncovered"),
+    ]);
     for entry in report
         .entries
         .iter()
         .filter(|entry| entry.status != DeltaStatus::Unchanged)
     {
-        render_delta_entry(output, entry);
+        table.push(delta_row(entry, threshold));
     }
     for entry in &report.removed {
-        writeln!(
-            output,
-            "  removed    {:>7.1}      N/A  {:<10}  {}  {}",
-            entry.baseline_score,
-            entry.language,
-            entry.symbol,
-            entry.file.display()
-        )
-        .unwrap();
+        table.push(removed_row(entry));
+    }
+    table
+}
+
+fn delta_row(entry: &DeltaEntry, threshold: f64) -> Vec<Cell> {
+    let current = &entry.current;
+    vec![
+        Cell::styled(status_text(entry.status), status_style(entry.status)),
+        Cell::styled(
+            format!("{:.1}", current.score),
+            score_style(current.score, threshold),
+        ),
+        Cell::styled(delta_text(entry.delta), delta_style(entry.delta)),
+        Cell::plain(current.language.as_str()),
+        Cell::plain(current.symbol.as_str()),
+        Cell::plain(location(&current.file, current.start_line)),
+        Cell::plain(format_ranges(&current.uncovered)),
+    ]
+}
+
+fn removed_row(entry: &RemovedEntry) -> Vec<Cell> {
+    vec![
+        Cell::styled("removed", DIM),
+        Cell::styled(format!("{:.1}", entry.baseline_score), DIM),
+        Cell::styled("N/A", DIM),
+        Cell::plain(entry.language.as_str()),
+        Cell::plain(entry.symbol.as_str()),
+        Cell::plain(entry.file.display().to_string()),
+        Cell::plain(""),
+    ]
+}
+
+fn status_text(status: DeltaStatus) -> String {
+    format!("{status:?}").to_ascii_lowercase()
+}
+
+/// Looked up rather than matched: a five-arm `match` alone would put this
+/// function over the repository's own CRAP gate.
+const STATUS_STYLES: [(DeltaStatus, Style); 4] = [
+    (DeltaStatus::Regressed, BAD),
+    (DeltaStatus::Improved, GOOD),
+    (DeltaStatus::New, NOTE),
+    (DeltaStatus::Moved, MOVED),
+];
+
+fn status_style(status: DeltaStatus) -> Style {
+    STATUS_STYLES
+        .iter()
+        .find(|(candidate, _)| *candidate == status)
+        .map_or(Style::new(), |(_, style)| *style)
+}
+
+fn delta_text(delta: Option<f64>) -> String {
+    delta.map_or_else(|| "N/A".into(), |value| format!("{value:+.2}"))
+}
+
+fn delta_style(delta: Option<f64>) -> Style {
+    delta.map_or(DIM, delta_sign_style)
+}
+
+fn delta_sign_style(delta: f64) -> Style {
+    if delta > 0.0 {
+        BAD
+    } else if delta < 0.0 {
+        GOOD
+    } else {
+        Style::new()
     }
 }
 
-fn render_delta_entry(output: &mut Vec<u8>, entry: &crate::baseline::DeltaEntry) {
-    let delta = entry
-        .delta
-        .map_or_else(|| "N/A".into(), |value| format!("{value:+.2}"));
-    writeln!(
-        output,
-        "  {:<10} {:>7.1}  {:>7}  {:<10}  {}  {}:{}{}",
-        format!("{:?}", entry.status).to_ascii_lowercase(),
-        entry.current.score,
-        delta,
-        entry.current.language,
-        entry.current.symbol,
-        entry.current.file.display(),
-        entry.current.start_line,
-        uncovered_cell(&entry.current.uncovered)
-    )
-    .unwrap();
+fn append_regression_summary(output: &mut String, regressions: usize, theme: Theme) {
+    let line = format!("{} found.", style::count(regressions, "regression"));
+    push_line(output, theme.paint(verdict_style(regressions), line));
 }
 
-fn append_scope_summary(output: &mut Vec<u8>, diagnostics: &ScopeDiagnostics) {
+fn append_scope_summary(output: &mut String, diagnostics: &ScopeDiagnostics, theme: Theme) {
     if diagnostics.coverage_files > 0 {
-        writeln!(
-            output,
-            "Coverage scope: {} analyzed file(s), {} coverage source file(s), {} matched, {} source-only, {} coverage-only.",
-            diagnostics.analyzed_files,
-            diagnostics.coverage_files,
-            diagnostics.matched_files,
-            diagnostics.source_only_count,
-            diagnostics.coverage_only_count
-        )
-        .unwrap();
+        push_line(output, theme.paint(DIM, scope_line(diagnostics)));
     }
     if diagnostics.warning_count > 0 {
-        writeln!(
-            output,
-            "{} source file warning(s).",
-            diagnostics.warning_count
-        )
-        .unwrap();
+        let line = format!(
+            "{}.",
+            style::count(diagnostics.warning_count, "source file warning")
+        );
+        push_line(output, theme.paint(WARN, line));
     }
+}
+
+fn scope_line(diagnostics: &ScopeDiagnostics) -> String {
+    format!(
+        "Coverage scope: {}, {}, {} matched, {} source-only, {} coverage-only.",
+        style::count(diagnostics.analyzed_files, "analyzed file"),
+        style::count(diagnostics.coverage_files, "coverage source file"),
+        diagnostics.matched_files,
+        diagnostics.source_only_count,
+        diagnostics.coverage_only_count
+    )
 }
 
 fn render_sarif(entries: &[Entry], threshold: f64) -> Result<String> {
@@ -559,7 +678,7 @@ fn render_sarif(entries: &[Entry], threshold: f64) -> Result<String> {
             json!({
                 "ruleId": "poly-crap/crap-threshold",
                 "level": "warning",
-                "message": {"text": format!("{} has CRAP {:.1} (CC {:.1}, coverage {})", entry.symbol, entry.score, entry.complexity, entry.coverage.map_or_else(|| "N/A".into(), |v| format!("{v:.1}%")))},
+                "message": {"text": format!("{} has CRAP {:.1} (CC {:.1}, coverage {})", entry.symbol, entry.score, entry.complexity, coverage_text(entry.coverage))},
                 "locations": [{"physicalLocation": {
                     "artifactLocation": {"uri": sarif_uri(&entry.file)},
                     "region": {"startLine": entry.start_line, "endLine": entry.end_line}
@@ -606,9 +725,16 @@ pub fn threshold_failed(entries: &[Entry], threshold: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::baseline::{DeltaEntry, RemovedEntry};
     use crate::model::{CoverageBasis, Language};
     use std::path::PathBuf;
+
+    fn options(summary: bool) -> Presentation {
+        Presentation {
+            threshold: 5.0,
+            summary,
+            theme: Theme::plain(),
+        }
+    }
 
     fn entry(score: f64) -> Entry {
         Entry {
@@ -702,19 +828,20 @@ mod tests {
         let entries = vec![failing, entry(3.0)];
         let totals = Totals::new(&entries, 5.0);
         let shown = apply_display_limits(entries, RowFilter::Failing(5.0), None, SortOrder::Crap);
-        let rendered = render_human(&shown, &diagnostics(), 5.0, false, totals);
-        assert!(rendered.contains("Location  Uncovered"), "{rendered}");
-        assert!(rendered.contains("src/a.rs:1  5, 8-11"), "{rendered}");
+        let rendered = render_human(&shown, &diagnostics(), options(false), totals);
+        let header = rendered.lines().nth(1).unwrap();
         assert!(
-            rendered.contains("1 more function(s) not shown"),
+            header.contains("Location") && header.ends_with("Uncovered"),
             "{rendered}"
         );
+        assert!(rendered.contains("src/a.rs:1  5, 8-11"), "{rendered}");
+        assert!(rendered.contains("1 more function not shown"), "{rendered}");
         // A summary prints no rows, so it has nothing to say about hidden ones.
-        let summary = render_human(&shown, &diagnostics(), 5.0, true, totals);
+        let summary = render_human(&shown, &diagnostics(), options(true), totals);
         assert!(!summary.contains("not shown"), "{summary}");
         // Nothing hidden, nothing said, and no trailing separator either.
         let all = vec![entry(6.0)];
-        let full = render_human(&all, &diagnostics(), 5.0, false, Totals::new(&all, 5.0));
+        let full = render_human(&all, &diagnostics(), options(false), Totals::new(&all, 5.0));
         assert!(!full.contains("not shown"), "{full}");
         assert!(full.contains("src/a.rs:1\n"), "{full}");
     }
@@ -732,8 +859,7 @@ mod tests {
         );
         let many: Vec<_> = (1..=8).map(|line| single(line * 2)).collect();
         assert_eq!(format_ranges(&many), "2, 4, 6, 8, 10, 12, +2 more");
-        assert_eq!(uncovered_cell(&[]), "");
-        assert_eq!(uncovered_cell(&[single(3)]), "  3");
+        assert_eq!(format_ranges(&[single(3)]), "3");
     }
 
     #[test]
@@ -798,12 +924,19 @@ mod tests {
     fn human_output_reports_the_crap_section() {
         let entries = vec![entry(6.0), entry(3.0)];
         let totals = Totals::new(&entries, 5.0);
-        let report = render_human(&entries, &diagnostics(), 5.0, false, totals);
-        assert!(report.contains("CRAP results"));
-        assert!(report.contains("1 of 2 function(s) exceed CRAP threshold 5.0."));
+        let report = render_human(&entries, &diagnostics(), options(false), totals);
+        assert!(report.starts_with("CRAP results\n"), "{report}");
         assert!(
-            render_human(&entries, &diagnostics(), 5.0, true, totals).contains("2 analyzed file")
+            report.contains("1 of 2 functions exceeds CRAP threshold 5.0."),
+            "{report}"
         );
+        assert!(report.contains("1 source file warning."), "{report}");
+        let summary = render_human(&entries, &diagnostics(), options(true), totals);
+        assert!(
+            summary.contains("2 analyzed files, 1 coverage source file, 1 matched"),
+            "{summary}"
+        );
+        assert!(!summary.contains("Symbol"), "{summary}");
         // Trimmed rows must not shrink the counts the summary line reports.
         let shown = apply_display_limits(
             entries.clone(),
@@ -812,9 +945,88 @@ mod tests {
             SortOrder::Crap,
         );
         assert!(
-            render_human(&shown, &diagnostics(), 5.0, false, totals)
-                .contains("1 of 2 function(s) exceed CRAP threshold 5.0.")
+            render_human(&shown, &diagnostics(), options(false), totals)
+                .contains("1 of 2 functions exceeds CRAP threshold 5.0.")
         );
+    }
+
+    #[test]
+    fn a_clean_run_prints_no_table_header() {
+        let entries = vec![entry(3.0), entry(2.0)];
+        let totals = Totals::new(&entries, 5.0);
+        let shown = apply_display_limits(entries, RowFilter::Failing(5.0), None, SortOrder::Crap);
+        let rendered = render_human(&shown, &diagnostics(), options(false), totals);
+        assert!(!rendered.contains("Symbol"), "{rendered}");
+        assert!(rendered.contains("2 functions not shown"), "{rendered}");
+        assert!(
+            rendered.contains("0 of 2 functions exceed CRAP threshold 5.0."),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn colors_reach_human_output_only() {
+        let entries = vec![entry(6.0)];
+        let totals = Totals::new(&entries, 5.0);
+        let colored = Presentation {
+            theme: Theme::ansi(),
+            ..options(false)
+        };
+        let human = render_human(&entries, &diagnostics(), colored, totals);
+        assert!(human.contains("\x1b["), "{human}");
+        assert!(human.starts_with("\x1b["), "{human}");
+        let plain = render_human(&entries, &diagnostics(), options(false), totals);
+        assert!(!plain.contains("\x1b["), "{plain}");
+        for format in [OutputFormat::Json, OutputFormat::Sarif] {
+            let machine =
+                render_absolute(entries.clone(), diagnostics(), format, colored, totals).unwrap();
+            assert!(!machine.contains("\x1b["), "{machine}");
+            serde_json::from_str::<serde_json::Value>(&machine).unwrap();
+        }
+    }
+
+    #[test]
+    fn score_style_follows_the_threshold() {
+        assert_eq!(score_style(6.0, 5.0), BAD);
+        assert_eq!(score_style(5.0, 5.0), WARN);
+        assert_eq!(score_style(4.0, 5.0), WARN);
+        assert_eq!(score_style(3.9, 5.0), GOOD);
+    }
+
+    #[test]
+    fn coverage_style_has_three_tiers_and_no_data_is_the_lowest() {
+        assert_eq!(coverage_style(None), BAD);
+        assert_eq!(coverage_style(Some(0.0)), BAD);
+        assert_eq!(coverage_style(Some(49.9)), BAD);
+        assert_eq!(coverage_style(Some(50.0)), WARN);
+        assert_eq!(coverage_style(Some(80.0)), GOOD);
+        assert_eq!(coverage_text(None), "N/A");
+        assert_eq!(coverage_text(Some(50.0)), "50.0%");
+    }
+
+    #[test]
+    fn delta_styles_follow_the_sign_and_the_status() {
+        assert_eq!(delta_style(Some(1.0)), BAD);
+        assert_eq!(delta_style(Some(-1.0)), GOOD);
+        assert_eq!(delta_style(Some(0.0)), Style::new());
+        assert_eq!(delta_style(None), DIM);
+        assert_eq!(delta_text(Some(4.0)), "+4.00");
+        assert_eq!(delta_text(None), "N/A");
+        assert_eq!(status_style(DeltaStatus::Regressed), BAD);
+        assert_eq!(status_style(DeltaStatus::Improved), GOOD);
+        assert_eq!(status_style(DeltaStatus::New), NOTE);
+        assert_eq!(status_style(DeltaStatus::Moved), MOVED);
+        assert_eq!(status_style(DeltaStatus::Unchanged), Style::new());
+        assert_eq!(status_text(DeltaStatus::New), "new");
+    }
+
+    #[test]
+    fn summary_verbs_and_verdicts_follow_the_counts() {
+        assert_eq!(exceed_verb(0), "exceed");
+        assert_eq!(exceed_verb(1), "exceeds");
+        assert_eq!(exceed_verb(2), "exceed");
+        assert_eq!(verdict_style(0), GOOD);
+        assert_eq!(verdict_style(1), BAD);
     }
 
     #[test]
@@ -856,11 +1068,27 @@ mod tests {
             diagnostics: diagnostics(),
         };
         let totals = DeltaTotals::new(&report, 5.0);
-        let rendered = render_delta_human(&report, 5.0, false, totals);
-        assert!(rendered.contains("regressed"));
-        assert!(rendered.contains("removed"));
-        assert!(rendered.contains("1 of 1 function(s) exceed CRAP threshold 5.0."));
-        assert!(render_delta_human(&report, 5.0, true, totals).contains("1 regression"));
+        let rendered = render_delta_human(&report, options(false), totals);
+        assert!(
+            rendered.starts_with("Changes since baseline\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("  regressed    8.0  +4.00  rust      run     src/a.rs:1"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("  removed      2.0    N/A  rust      old     src/old.rs"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("1 regression found."), "{rendered}");
+        assert!(
+            rendered.contains("1 of 1 function exceeds CRAP threshold 5.0."),
+            "{rendered}"
+        );
+        let summary = render_delta_human(&report, options(true), totals);
+        assert!(summary.contains("1 regression found."), "{summary}");
+        assert!(!summary.contains("Status"), "{summary}");
     }
 
     #[test]
@@ -894,8 +1122,13 @@ mod tests {
         let trimmed = DeltaTotals::new(&report, 5.0);
         assert!(!trimmed.regressed());
         assert!(!trimmed.exceeded());
-        let rendered = render_delta_human(&report, 5.0, false, totals);
-        assert!(rendered.contains("1 regression(s) found."));
-        assert!(rendered.contains("1 of 2 function(s) exceed CRAP threshold 5.0."));
+        let rendered = render_delta_human(&report, options(false), totals);
+        // No row survived, so there is no table and no header either.
+        assert!(!rendered.contains("Status"), "{rendered}");
+        assert!(rendered.contains("1 regression found."), "{rendered}");
+        assert!(
+            rendered.contains("1 of 2 functions exceeds CRAP threshold 5.0."),
+            "{rendered}"
+        );
     }
 }

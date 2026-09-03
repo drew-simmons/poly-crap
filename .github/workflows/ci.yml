@@ -61,4 +61,4 @@ jobs:
       - name: Generate coverage
         run: cargo llvm-cov --locked --all-targets --all-features --lcov --output-path lcov.info
       - name: Enforce CRAP score
-        run: cargo run --locked -- --language rust --coverage lcov.info --threshold 5 --fail-above
+        run: cargo run --locked -- --language rust --coverage lcov.info --threshold 5 --fail-above --color always

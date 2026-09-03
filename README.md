@@ -73,12 +73,15 @@ There is no Windows build, and Windows is not tested.
 
    ```text
    CRAP results
-     CRAP     CC  Coverage  Language    Symbol  Location  Uncovered
-         6.0    4.0     50.0%  python  run  ./app.py:4  6-8
-     1 more function(s) not shown; adjust --min or --top to list them.
-   1 of 2 function(s) exceed CRAP threshold 5.0.
-   Coverage scope: 1 analyzed file(s), 1 coverage source file(s), 1 matched, 0 source-only, 0 coverage-only.
+     CRAP   CC  Coverage  Language  Symbol  Location    Uncovered
+      6.0  4.0     50.0%  python    run     ./app.py:4  6-8
+     1 more function not shown; adjust --min or --top to list them.
+   1 of 2 functions exceeds CRAP threshold 5.0.
+   Coverage scope: 1 analyzed file, 1 coverage source file, 1 matched, 0 source-only, 0 coverage-only.
    ```
+
+   On a terminal, the score and coverage cells are colored by how bad they are,
+   and the summary line is red while a function is over the threshold.
 
 4. Gate a branch. This scores only the functions the branch changed and exits
    `1` when one is over the threshold:
@@ -264,11 +267,11 @@ table, so you can tell a measured 0% from a missing one.
 
 ```text
 CRAP results
-  CRAP     CC  Coverage  Language    Symbol  Location  Uncovered
-      6.0    4.0     50.0%  python  run  ./app.py:4  6-8
-  1 more function(s) not shown; adjust --min or --top to list them.
-1 of 2 function(s) exceed CRAP threshold 5.0.
-Coverage scope: 1 analyzed file(s), 1 coverage source file(s), 1 matched, 0 source-only, 0 coverage-only.
+  CRAP   CC  Coverage  Language  Symbol  Location    Uncovered
+   6.0  4.0     50.0%  python    run     ./app.py:4  6-8
+  1 more function not shown; adjust --min or --top to list them.
+1 of 2 functions exceeds CRAP threshold 5.0.
+Coverage scope: 1 analyzed file, 1 coverage source file, 1 matched, 0 source-only, 0 coverage-only.
 ```
 
 - **CRAP** is the score.
@@ -284,14 +287,43 @@ Coverage scope: 1 analyzed file(s), 1 coverage source file(s), 1 matched, 0 sour
 - **Uncovered** lists the line ranges inside the function that no test ran, up
   to six, then a count of the rest.
 
-The table holds the functions over the threshold, sorted by score. The line
-under it says how many rows it left out. `--min <SCORE>` sets a different
-floor, so `--min 0` lists every function; `--top <N>` caps the rows; `--sort
-file` groups rows by file. None of them change the summary line or the exit
-code. `--summary` prints the summary lines with no table.
+The table holds the functions over the threshold, sorted by score, with every
+column padded to line up. The line under it says how many rows it left out,
+and a run with nothing over the threshold prints that line with no table.
+`--min <SCORE>` sets a different floor, so `--min 0` lists every function;
+`--top <N>` caps the rows; `--sort file` groups rows by file. None of them
+change the summary line or the exit code. `--summary` prints the summary
+lines with no table.
 
 With `--diff-base`, a first line names the merge base and counts the changed
-files and the functions selected from them.
+files and the functions selected from them:
+
+```text
+Git diff against main from 3f2a9c1: 2 changed files, 1 function selected.
+```
+
+### Color
+
+On a terminal, poly-crap colors the cells that carry a judgement and leaves
+the rest plain:
+
+- A score is red over the threshold, yellow within 20% of it, and green
+  below that.
+- Coverage is green from 80%, yellow from 50%, and red below that or when it
+  is `N/A`.
+- In a baseline comparison, `regressed` is red, `improved` green, `new` cyan,
+  `moved` magenta, and `removed` dim. A positive delta is red and a negative
+  one green.
+- The threshold and regression summary lines are red when anything failed and
+  green otherwise. Lines that only give context are dim.
+- On stderr, the `warning:`, `note:`, and `error:` prefixes are colored.
+
+`--color auto`, the default, colors a stream when it is a terminal that
+supports color, never when `NO_COLOR` is set, and always when
+`CLICOLOR_FORCE` is. `--color always` and `--color never` decide outright.
+Stdout and stderr are judged on their own, so `poly-crap --format json | jq`
+keeps its colored warnings. JSON and SARIF never contain an escape code, and a
+report written with `--output` gets them only under `--color always`.
 
 ### JSON
 
@@ -373,6 +405,15 @@ gets one status:
 - `new`: nothing in the baseline matched.
 - `moved`: the same function, found in another file.
 - `removed`: a baseline function nothing matched.
+
+```text
+Changes since baseline
+  Status     Score  Delta  Language  Symbol  Location    Uncovered
+  regressed    6.0  +5.00  python    run     ./app.py:4  6-8
+  new          1.0    N/A  python    helper  ./app.py:9
+1 regression found.
+1 of 3 functions exceeds CRAP threshold 5.0.
+```
 
 `--fail-regression` fails the run on any `regressed` function. It says nothing
 about a `new` one, because there is no earlier score to rise from, so pair it
@@ -509,6 +550,8 @@ over the file, and the file over the defaults, except that `exclude` and
 - `--format <FORMAT>`, key `format`, default `human`. Also `json` or `sarif`.
 - `--output <FILE>`. Write the report to a file instead of stdout. Command
   line only.
+- `--color <WHEN>`, default `auto`. Also `always` or `never`. Command line
+  only; see [Color](#color).
 - `--min <SCORE>`, key `min`. Show rows scoring at least this much. Human
   output otherwise shows rows over the threshold; JSON shows every row.
 - `--top <N>`, key `top`. Show at most `N` rows, highest scores first.
@@ -572,8 +615,11 @@ jobs:
             | sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Gate changed functions
-        run: poly-crap --diff-base "origin/${{ github.base_ref }}" --fail-above
+        run: poly-crap --diff-base "origin/${{ github.base_ref }}" --fail-above --color always
 ```
+
+Actions renders colors in its logs but is not a terminal, so `--color always`
+asks for them.
 
 To show failures as code-scanning alerts on the pull request, write SARIF and
 upload it. This needs `security-events: write` in the job's permissions. Run

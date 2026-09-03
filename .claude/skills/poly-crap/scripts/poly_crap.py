@@ -794,7 +794,7 @@ def scenario_formats(c: Checks) -> None:
     # check for the wrong reason. The next assertion is the one that pins it.
     # \d+\.\d+ and not [\d.]+ — the summary line ends in a period, which a
     # greedy character class swallows into the number.
-    match = re.search(r"exceed CRAP threshold (\d+\.\d+)", stdout)
+    match = re.search(r"exceeds? CRAP threshold (\d+\.\d+)", stdout)
     c.eq("human summary names the threshold", match is not None, True)
     threshold = float(match.group(1)) if match else -1.0
     over = [e for e in crap_json()["entries"] if e["score"] > threshold]
