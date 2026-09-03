@@ -138,15 +138,17 @@ To pick one for your code:
 
 ## Coverage reports
 
-Poly-crap reads three formats and detects each from its contents:
+Poly-crap reads four formats and detects each from its contents:
 
 - LCOV, from `cargo llvm-cov`, c8, Istanbul, coverage.py, and most others.
-- Go cover profiles, from `go test -coverprofile`.
+- Cobertura XML, from `coverage xml`, pytest-cov, Jest's `cobertura` reporter,
+  and .NET coverlet.
 - JaCoCo XML, from the Maven and Gradle plug-ins.
+- Go cover profiles, from `go test -coverprofile`.
 
-LCOV and JaCoCo give line coverage. Go profiles give statement coverage,
-weighted by statement count. JSON output records which basis each function
-used.
+LCOV, Cobertura, and JaCoCo give line coverage. Go profiles give statement
+coverage, weighted by statement count. JSON output records which basis each
+function used.
 
 ### Producing a report
 
@@ -162,11 +164,15 @@ TypeScript or JavaScript with c8:
 npx c8 --reporter=lcov npm test
 ```
 
-Python:
+Python, with either output format:
 
 ```sh
 coverage run -m pytest
 coverage lcov -o coverage.lcov
+```
+
+```sh
+pytest --cov --cov-report=xml
 ```
 
 Go:
@@ -201,6 +207,8 @@ lcov.info
 coverage/lcov.info
 coverage/coverage.lcov
 coverage.out
+coverage.xml
+coverage/cobertura-coverage.xml
 target/site/jacoco/jacoco.xml
 build/reports/jacoco/test/jacocoTestReport.xml
 ```
@@ -267,9 +275,11 @@ Coverage scope: 1 analyzed file(s), 1 coverage source file(s), 1 matched, 0 sour
 - **CC** is the cyclomatic complexity.
 - **Coverage** is the share of the function's executable lines that a test
   ran, or `N/A` when no report covers the function.
-- **Symbol** is the qualified name: `Class.method`, `Type::method` in Rust,
-  `Type.Method` for a Go method, `Class.method(int,String)` in Java, and
-  `outer.inner` for a nested function.
+- **Symbol** is the qualified name: `Class.method`, `Type::method` or
+  `module::function` in Rust, `Type.Method` for a Go method,
+  `Class.method(int,String)` in Java, and `outer.inner` for a nested function.
+  A JavaScript class expression takes the name of the variable it is assigned
+  to.
 - **Location** is the file and the line the function starts on.
 - **Uncovered** lists the line ranges inside the function that no test ran, up
   to six, then a count of the rest.
@@ -410,17 +420,19 @@ interface signatures, are skipped as well.
 
 Every function starts at `1`. Each of these adds one:
 
-- `if`, `elif`, and `else if`.
+- `if`, `elif`, and `else if`, and Rust's `let … else`.
 - A ternary or conditional expression.
 - Each loop: `for`, `while`, `do`, and Rust's `loop`.
 - Each `case` of a `switch`, arm of a `match`, or case of a Go `select`.
-  Default arms add nothing.
+  Default arms add nothing: `default`, Rust's `_ =>`, and Python's `case _:`.
+  A guarded `case _ if x:` still counts, and so does its guard.
 - Each `catch` or `except` clause.
-- Each `&&`, `||`, `and`, and `or`.
+- Each `&&`, `||`, `and`, and `or`, including the `&&` of a Rust `if let`
+  chain.
 - Each `for` and `if` clause in a Python comprehension.
 
-These add nothing: `??` and `?.`, Rust's `?` and `let … else`, `finally`,
-early returns, and a nested function, which is scored on its own.
+These add nothing: `??` and `?.`, Rust's `?`, `finally`, early returns, and a
+nested function, which is scored on its own.
 
 ### Excluded paths
 

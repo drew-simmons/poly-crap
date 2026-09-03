@@ -3,7 +3,7 @@ mod git_diff;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, error::ErrorKind};
 use poly_crap::baseline;
-use poly_crap::config::{self, EffectiveConfig};
+use poly_crap::config::{self, EffectiveConfig, Overrides};
 use poly_crap::model::{Entry, Language, MissingCoveragePolicy, ScopeDiagnostics};
 use poly_crap::report::{self, OutputFormat, SortOrder};
 use poly_crap::{
@@ -178,25 +178,25 @@ fn collect_entries(cli: &Cli, config: &EffectiveConfig) -> Result<Collected> {
 
 fn effective_config(cli: &Cli) -> Result<EffectiveConfig> {
     let file_config = config::load(&cli.path)?;
-    let mut effective = EffectiveConfig::new(
-        file_config,
-        cli.language.clone(),
-        cli.coverage.clone(),
-        cli.threshold,
-        cli.missing,
-        cli.exclude.clone(),
-        cli.no_default_excludes,
-        cli.allow.clone(),
-        cli.min,
-        cli.top,
-        cli.sort,
-        cli.format,
-        cli.summary,
-        cli.fail_above,
-        cli.fail_regression,
-        cli.epsilon,
-        cli.jobs,
-    );
+    let overrides = Overrides {
+        languages: cli.language.clone(),
+        coverage: cli.coverage.clone(),
+        threshold: cli.threshold,
+        missing: cli.missing,
+        exclude: cli.exclude.clone(),
+        no_default_excludes: cli.no_default_excludes,
+        allow: cli.allow.clone(),
+        min: cli.min,
+        top: cli.top,
+        sort: cli.sort,
+        format: cli.format,
+        summary: cli.summary,
+        fail_above: cli.fail_above,
+        fail_regression: cli.fail_regression,
+        epsilon: cli.epsilon,
+        jobs: cli.jobs,
+    };
+    let mut effective = EffectiveConfig::new(file_config, overrides);
     discover_missing_coverage(cli, &mut effective);
     Ok(effective)
 }

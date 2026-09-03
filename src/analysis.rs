@@ -6,11 +6,16 @@ use std::collections::HashSet;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
 
+/// Every function found under a root, with counts of the files behind them.
 #[derive(Debug, Default)]
 pub struct Analysis {
+    /// One per named function, sorted by file, then start line, then symbol.
     pub units: Vec<CodeUnit>,
+    /// Files of an enabled language that survived the excludes.
     pub candidate_files: usize,
+    /// Candidates whose syntax tree had no errors.
     pub parsed_files: usize,
+    /// One entry per file that failed to read or parse.
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -24,6 +29,11 @@ struct UnitSpec<'tree> {
     name: String,
 }
 
+/// Parse every file of the given languages under `root`, minus the exclude
+/// globs, which match paths relative to `root`.
+///
+/// `.gitignore` and hidden directories are honored. No excludes are applied
+/// beyond the ones passed in; see [`crate::config::DEFAULT_EXCLUDES`].
 pub fn analyze_tree(root: &Path, languages: &[Language], excludes: &[String]) -> Result<Analysis> {
     validate_root(root)?;
     let exclude_set = build_globs(excludes)?;
@@ -32,6 +42,8 @@ pub fn analyze_tree(root: &Path, languages: &[Language], excludes: &[String]) ->
     analyze_discovered(paths)
 }
 
+/// [`analyze_tree`] limited to the `selected` paths, given relative to `root`.
+/// A selected path still has to pass the language and exclude filters.
 pub fn analyze_paths(
     root: &Path,
     languages: &[Language],
@@ -503,14 +515,19 @@ fn java_signature(node: Node<'_>, language: Language, name: String, source: &[u8
     let Some(parameters) = node.child_by_field_name("parameters") else {
         return name;
     };
-    let mut types = Vec::new();
+    format!(
+        "{name}({})",
+        java_parameter_types(parameters, source).join(",")
+    )
+}
+
+fn java_parameter_types(parameters: Node<'_>, source: &[u8]) -> Vec<String> {
     let mut cursor = parameters.walk();
-    for parameter in parameters.named_children(&mut cursor) {
-        if let Some(kind) = parameter.child_by_field_name("type") {
-            types.push(normalize(text(kind, source).unwrap_or_default()));
-        }
-    }
-    format!("{name}({})", types.join(","))
+    parameters
+        .named_children(&mut cursor)
+        .filter_map(|parameter| parameter.child_by_field_name("type"))
+        .map(|kind| normalize(text(kind, source).unwrap_or_default()))
+        .collect()
 }
 
 fn qualify_symbol(node: Node<'_>, language: Language, name: &str, source: &[u8]) -> String {
@@ -543,12 +560,15 @@ fn is_container(kind: &str) -> bool {
     matches!(
         kind,
         "class_declaration"
+            | "abstract_class_declaration"
+            | "class"
             | "class_definition"
             | "interface_declaration"
             | "enum_declaration"
             | "record_declaration"
             | "trait_item"
             | "impl_item"
+            | "mod_item"
             | "function_declaration"
             | "function_definition"
             | "function_item"
@@ -575,12 +595,27 @@ fn container_name(node: Node<'_>, language: Language, source: &[u8]) -> Option<S
     if node.kind() == "impl_item" {
         return impl_name(node, source);
     }
-    let name = node.child_by_field_name("name")?;
+    let name = node
+        .child_by_field_name("name")
+        .or_else(|| assigned_class_name(node, language))?;
     let value = text(name, source)?.to_string();
     if is_java_callable(node, language) {
         return Some(java_signature(node, language, value, source));
     }
     (!value.is_empty()).then_some(value)
+}
+
+/// The variable a class expression is assigned to, so the methods of
+/// `const Widget = class { ... }` read as `Widget.method` rather than bare.
+fn assigned_class_name<'tree>(node: Node<'tree>, language: Language) -> Option<Node<'tree>> {
+    if node.kind() != "class" {
+        return None;
+    }
+    let parent = node.parent()?;
+    let spec = ASSIGNMENT_SPECS
+        .iter()
+        .find(|spec| spec.language == language && spec.node_kind == parent.kind())?;
+    parent.child_by_field_name(spec.name_field)
 }
 
 fn impl_name(node: Node<'_>, source: &[u8]) -> Option<String> {
@@ -640,7 +675,7 @@ fn is_callable(kind: &str) -> bool {
 }
 
 fn is_decision(node: Node<'_>, source: &[u8]) -> bool {
-    if is_simple_decision(node.kind()) {
+    if is_simple_decision(node) {
         return true;
     }
     if is_arm_decision(node.kind()) {
@@ -649,27 +684,34 @@ fn is_decision(node: Node<'_>, source: &[u8]) -> bool {
     is_boolean_decision(node, source)
 }
 
-fn is_simple_decision(kind: &str) -> bool {
-    matches!(
-        kind,
-        "if_statement"
-            | "elif_clause"
-            | "if_expression"
-            | "for_statement"
-            | "for_in_statement"
-            | "while_statement"
-            | "while_expression"
-            | "do_statement"
-            | "enhanced_for_statement"
-            | "loop_expression"
-            | "for_expression"
-            | "catch_clause"
-            | "except_clause"
-            | "ternary_expression"
-            | "conditional_expression"
-            | "for_in_clause"
-            | "if_clause"
-    )
+fn is_simple_decision(node: Node<'_>) -> bool {
+    is_let_else(node)
+        || matches!(
+            node.kind(),
+            "if_statement"
+                | "elif_clause"
+                | "if_expression"
+                | "for_statement"
+                | "for_in_statement"
+                | "while_statement"
+                | "while_expression"
+                | "do_statement"
+                | "enhanced_for_statement"
+                | "loop_expression"
+                | "for_expression"
+                | "catch_clause"
+                | "except_clause"
+                | "ternary_expression"
+                | "conditional_expression"
+                | "for_in_clause"
+                | "if_clause"
+        )
+}
+
+/// Rust's `let … else` diverges on its else branch, so it is a decision like
+/// `if let`, even though the grammar files it under `let_declaration`.
+fn is_let_else(node: Node<'_>) -> bool {
+    node.kind() == "let_declaration" && node.child_by_field_name("alternative").is_some()
 }
 
 fn is_arm_decision(kind: &str) -> bool {
@@ -690,12 +732,26 @@ fn is_arm_decision(kind: &str) -> bool {
 
 fn is_non_default_arm(node: Node<'_>, source: &[u8]) -> bool {
     let value = text(node, source).unwrap_or_default().trim_start();
-    !value.starts_with("default") && !value.starts_with("_ =>")
+    !value.starts_with("default") && !value.starts_with("_ =>") && !is_wildcard_case(value)
 }
 
+/// Python's `case _:` is the default arm of a `match` and adds nothing, like
+/// `default:` and `_ =>`. A guarded `case _ if x:` still branches.
+fn is_wildcard_case(value: &str) -> bool {
+    value
+        .strip_prefix("case")
+        .map(str::trim_start)
+        .and_then(|rest| rest.strip_prefix('_'))
+        .is_some_and(|after| after.trim_start().starts_with(':'))
+}
+
+/// `let_chain` is Rust's `if let … && …`: each node holds one `&&`, so it
+/// counts like the `&&` of a plain condition.
 fn is_boolean_decision(node: Node<'_>, source: &[u8]) -> bool {
-    matches!(node.kind(), "binary_expression" | "boolean_operator")
-        && has_boolean_operator(node, source)
+    matches!(
+        node.kind(),
+        "binary_expression" | "boolean_operator" | "let_chain"
+    ) && has_boolean_operator(node, source)
 }
 
 fn has_boolean_operator(node: Node<'_>, source: &[u8]) -> bool {
@@ -879,5 +935,72 @@ mod tests {
         let path = dir.path().join("main.tf");
         fs::write(&path, "resource \"aws_x\" \"main\" { count = 1 }\n").unwrap();
         assert!(Language::from_path(&path).is_none());
+    }
+
+    fn symbols(units: &[CodeUnit]) -> Vec<&str> {
+        units.iter().map(|unit| unit.symbol.as_str()).collect()
+    }
+
+    #[test]
+    fn typescript_abstract_and_assigned_classes_qualify_methods() {
+        let units = analyze(
+            "ts",
+            concat!(
+                "export abstract class Base { run(x: boolean) { return x ? 1 : 0; } }\n",
+                "const Widget = class { go(y: number) { return y > 1; } };\n",
+                "const Alias = class Inner { stop() { return 0; } };\n",
+            ),
+        );
+        // A class expression takes the variable's name unless it names itself.
+        assert_eq!(symbols(&units), ["Base.run", "Widget.go", "Inner.stop"]);
+    }
+
+    #[test]
+    fn rust_inline_modules_qualify_functions() {
+        let units = analyze(
+            "rs",
+            "mod alpha { pub fn run() {} }\nmod beta { pub fn run() {} }\nfn top() {}",
+        );
+        assert_eq!(symbols(&units), ["alpha::run", "beta::run", "top"]);
+    }
+
+    #[test]
+    fn python_match_ignores_the_wildcard_arm() {
+        let units = analyze(
+            "py",
+            concat!(
+                "def pick(x):\n",
+                "    match x:\n",
+                "        case 1:\n",
+                "            return 1\n",
+                "        case 2:\n",
+                "            return 2\n",
+                "        case _ if x > 9:\n",
+                "            return 9\n",
+                "        case _:\n",
+                "            return 0\n",
+            ),
+        );
+        // Two literal arms, the guarded wildcard arm, and its guard count.
+        // The bare `case _:` is the default and adds nothing.
+        assert_eq!(units[0].complexity, 5.0);
+    }
+
+    #[test]
+    fn rust_let_else_and_let_chains_count() {
+        let units = analyze(
+            "rs",
+            concat!(
+                "fn first(x: Option<u8>) -> u8 { let Some(v) = x else { return 0 }; v }\n",
+                "fn second(x: Option<u8>) -> u8 { if let Some(v) = x && v > 1 { v } else { 0 } }\n",
+                "fn third(x: Option<u8>) -> u8 { let v = x.unwrap_or(0); v }\n",
+            ),
+        );
+        assert_eq!(units[0].complexity, 2.0, "let-else diverges like if-let");
+        assert_eq!(
+            units[1].complexity, 3.0,
+            "the && of a let chain is a decision"
+        );
+        assert_eq!(units[2].complexity, 1.0, "a plain let is not");
     }
 }
