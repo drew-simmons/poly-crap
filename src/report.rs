@@ -1,5 +1,5 @@
 use crate::baseline::{DeltaReport, DeltaStatus};
-use crate::model::{Entry, ScopeDiagnostics};
+use crate::model::{Entry, LineRange, ScopeDiagnostics};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
@@ -28,6 +28,49 @@ pub enum SortOrder {
     #[default]
     Crap,
     File,
+}
+
+/// Which rows a report prints. The gates never read this; see [`gate_entries`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RowFilter {
+    /// Every entry. Machine formats default to this so a JSON report can
+    /// serve as a baseline.
+    All,
+    /// Entries scoring at least this much, from `--min`.
+    AtLeast(f64),
+    /// Entries over the threshold. The human table defaults to this so a
+    /// large repository prints its failures rather than every function.
+    Failing(f64),
+}
+
+impl RowFilter {
+    /// The filter for an absolute report: `--min` when given, otherwise
+    /// failing rows for human output and every row for machine output.
+    #[must_use]
+    pub fn for_report(format: OutputFormat, min: Option<f64>, threshold: f64) -> Self {
+        match (min, format) {
+            (Some(minimum), _) => Self::AtLeast(minimum),
+            (None, OutputFormat::Human) => Self::Failing(threshold),
+            (None, _) => Self::All,
+        }
+    }
+
+    /// The filter for a delta report: `--min` when given, otherwise every row.
+    ///
+    /// A delta already hides unchanged functions, and a regression below the
+    /// threshold still deserves a row, so the threshold plays no part here.
+    #[must_use]
+    pub fn explicit(min: Option<f64>) -> Self {
+        min.map_or(Self::All, Self::AtLeast)
+    }
+
+    fn keeps(self, score: f64) -> bool {
+        match self {
+            Self::All => true,
+            Self::AtLeast(minimum) => score >= minimum,
+            Self::Failing(threshold) => score > threshold,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -73,11 +116,11 @@ pub fn gate_entries(
 #[must_use]
 pub fn apply_display_limits(
     mut entries: Vec<Entry>,
-    min: Option<f64>,
+    filter: RowFilter,
     top: Option<usize>,
     sort: SortOrder,
 ) -> Vec<Entry> {
-    entries.retain(|entry| min.is_none_or(|minimum| entry.score >= minimum));
+    entries.retain(|entry| filter.keeps(entry.score));
     apply_top(&mut entries, top);
     sort_entries(&mut entries, sort);
     entries
@@ -86,10 +129,10 @@ pub fn apply_display_limits(
 /// Apply the same display limits to a delta report, scoring by the current run.
 ///
 /// Removed entries have no current score, so the limits leave them alone.
-pub fn limit_delta(report: &mut DeltaReport, min: Option<f64>, top: Option<usize>) {
+pub fn limit_delta(report: &mut DeltaReport, filter: RowFilter, top: Option<usize>) {
     report
         .entries
-        .retain(|entry| min.is_none_or(|minimum| entry.current.score >= minimum));
+        .retain(|entry| filter.keeps(entry.current.score));
     if let Some(limit) = top {
         report
             .entries
@@ -338,16 +381,33 @@ fn render_crap_section(
 ) {
     writeln!(output, "CRAP results").unwrap();
     if !summary {
-        writeln!(
-            output,
-            "  CRAP     CC  Coverage  Language    Symbol  Location"
-        )
-        .unwrap();
-        for entry in entries {
-            render_crap_entry(output, entry);
-        }
+        render_crap_rows(output, entries, totals);
     }
     append_threshold_summary(output, totals, threshold);
+}
+
+fn render_crap_rows(output: &mut Vec<u8>, entries: &[Entry], totals: Totals) {
+    writeln!(
+        output,
+        "  CRAP     CC  Coverage  Language    Symbol  Location  Uncovered"
+    )
+    .unwrap();
+    for entry in entries {
+        render_crap_entry(output, entry);
+    }
+    append_hidden_rows(output, totals.total.saturating_sub(entries.len()));
+}
+
+/// Say how many rows the display limits dropped, so a short table is not
+/// mistaken for a short report.
+fn append_hidden_rows(output: &mut Vec<u8>, hidden: usize) {
+    if hidden > 0 {
+        writeln!(
+            output,
+            "  {hidden} more function(s) not shown; adjust --min or --top to list them."
+        )
+        .unwrap();
+    }
 }
 
 fn append_threshold_summary(output: &mut Vec<u8>, totals: Totals, threshold: f64) {
@@ -365,16 +425,45 @@ fn render_crap_entry(output: &mut Vec<u8>, entry: &Entry) {
         .map_or_else(|| "N/A".into(), |value| format!("{value:.1}%"));
     writeln!(
         output,
-        "  {:>7.1}  {:>5.1}  {:>8}  {:<10}  {}  {}:{}",
+        "  {:>7.1}  {:>5.1}  {:>8}  {:<10}  {}  {}:{}{}",
         entry.score,
         entry.complexity,
         coverage,
         entry.language,
         entry.symbol,
         entry.file.display(),
-        entry.start_line
+        entry.start_line,
+        uncovered_cell(&entry.uncovered)
     )
     .unwrap();
+}
+
+/// Most uncovered ranges one row lists before it says how many more there are.
+const MAX_RANGES: usize = 6;
+
+/// The uncovered column with its separator, or nothing when there is no
+/// uncovered line to point at.
+fn uncovered_cell(ranges: &[LineRange]) -> String {
+    if ranges.is_empty() {
+        return String::new();
+    }
+    format!("  {}", format_ranges(ranges))
+}
+
+fn format_ranges(ranges: &[LineRange]) -> String {
+    let mut listed: Vec<_> = ranges.iter().take(MAX_RANGES).map(format_range).collect();
+    if ranges.len() > MAX_RANGES {
+        listed.push(format!("+{} more", ranges.len() - MAX_RANGES));
+    }
+    listed.join(", ")
+}
+
+fn format_range(range: &LineRange) -> String {
+    if range.start == range.end {
+        range.start.to_string()
+    } else {
+        format!("{}-{}", range.start, range.end)
+    }
 }
 
 fn render_delta_human(
@@ -397,7 +486,7 @@ fn render_delta_human(
 fn render_delta_rows(output: &mut Vec<u8>, report: &DeltaReport) {
     writeln!(
         output,
-        "  Status     Score    Delta  Language    Symbol  Location"
+        "  Status     Score    Delta  Language    Symbol  Location  Uncovered"
     )
     .unwrap();
     for entry in report
@@ -426,14 +515,15 @@ fn render_delta_entry(output: &mut Vec<u8>, entry: &crate::baseline::DeltaEntry)
         .map_or_else(|| "N/A".into(), |value| format!("{value:+.2}"));
     writeln!(
         output,
-        "  {:<10} {:>7.1}  {:>7}  {:<10}  {}  {}:{}",
+        "  {:<10} {:>7.1}  {:>7}  {:<10}  {}  {}:{}{}",
         format!("{:?}", entry.status).to_ascii_lowercase(),
         entry.current.score,
         delta,
         entry.current.language,
         entry.current.symbol,
         entry.current.file.display(),
-        entry.current.start_line
+        entry.current.start_line,
+        uncovered_cell(&entry.current.uncovered)
     )
     .unwrap();
 }
@@ -548,13 +638,89 @@ mod tests {
     fn top_keeps_the_highest_scores() {
         let filtered = apply_display_limits(
             vec![entry(4.0), entry(3.0), entry(2.0)],
-            None,
+            RowFilter::All,
             Some(2),
             SortOrder::Crap,
         );
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].score, 4.0);
         assert_eq!(filtered[1].score, 3.0);
+    }
+
+    #[test]
+    fn human_output_defaults_to_failing_rows() {
+        // A human report lists failures; a JSON one keeps every entry so it
+        // can serve as a baseline. `--min` overrides both.
+        assert_eq!(
+            RowFilter::for_report(OutputFormat::Human, None, 5.0),
+            RowFilter::Failing(5.0)
+        );
+        assert_eq!(
+            RowFilter::for_report(OutputFormat::Json, None, 5.0),
+            RowFilter::All
+        );
+        assert_eq!(
+            RowFilter::for_report(OutputFormat::Sarif, None, 5.0),
+            RowFilter::All
+        );
+        assert_eq!(
+            RowFilter::for_report(OutputFormat::Human, Some(0.0), 5.0),
+            RowFilter::AtLeast(0.0)
+        );
+        assert_eq!(RowFilter::explicit(None), RowFilter::All);
+        assert_eq!(RowFilter::explicit(Some(2.0)), RowFilter::AtLeast(2.0));
+        // Failing is strict, like the gate. `--min` is inclusive, as documented.
+        let entries = || vec![entry(6.0), entry(5.0), entry(3.0)];
+        let failing =
+            apply_display_limits(entries(), RowFilter::Failing(5.0), None, SortOrder::Crap);
+        assert_eq!(failing.len(), 1);
+        let at_least =
+            apply_display_limits(entries(), RowFilter::AtLeast(5.0), None, SortOrder::Crap);
+        assert_eq!(at_least.len(), 2);
+    }
+
+    #[test]
+    fn human_output_names_hidden_rows_and_uncovered_lines() {
+        let mut failing = entry(6.0);
+        failing.uncovered = vec![
+            LineRange { start: 5, end: 5 },
+            LineRange { start: 8, end: 11 },
+        ];
+        let entries = vec![failing, entry(3.0)];
+        let totals = Totals::new(&entries, 5.0);
+        let shown = apply_display_limits(entries, RowFilter::Failing(5.0), None, SortOrder::Crap);
+        let rendered = render_human(&shown, &diagnostics(), 5.0, false, totals);
+        assert!(rendered.contains("Location  Uncovered"), "{rendered}");
+        assert!(rendered.contains("src/a.rs:1  5, 8-11"), "{rendered}");
+        assert!(
+            rendered.contains("1 more function(s) not shown"),
+            "{rendered}"
+        );
+        // A summary prints no rows, so it has nothing to say about hidden ones.
+        let summary = render_human(&shown, &diagnostics(), 5.0, true, totals);
+        assert!(!summary.contains("not shown"), "{summary}");
+        // Nothing hidden, nothing said, and no trailing separator either.
+        let all = vec![entry(6.0)];
+        let full = render_human(&all, &diagnostics(), 5.0, false, Totals::new(&all, 5.0));
+        assert!(!full.contains("not shown"), "{full}");
+        assert!(full.contains("src/a.rs:1\n"), "{full}");
+    }
+
+    #[test]
+    fn uncovered_ranges_are_listed_with_a_cap() {
+        let single = |line| LineRange {
+            start: line,
+            end: line,
+        };
+        assert_eq!(format_ranges(&[]), "");
+        assert_eq!(
+            format_ranges(&[single(4), LineRange { start: 6, end: 9 }]),
+            "4, 6-9"
+        );
+        let many: Vec<_> = (1..=8).map(|line| single(line * 2)).collect();
+        assert_eq!(format_ranges(&many), "2, 4, 6, 8, 10, 12, +2 more");
+        assert_eq!(uncovered_cell(&[]), "");
+        assert_eq!(uncovered_cell(&[single(3)]), "  3");
     }
 
     #[test]
@@ -571,7 +737,10 @@ mod tests {
         let totals = Totals::new(&entries, 1.0);
         assert_eq!((totals.failures, totals.total), (3, 3));
         assert!(threshold_failed(&entries, 1.0));
-        assert!(apply_display_limits(entries, Some(100.0), None, SortOrder::Crap).is_empty());
+        assert!(
+            apply_display_limits(entries, RowFilter::AtLeast(100.0), None, SortOrder::Crap)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -623,7 +792,12 @@ mod tests {
             render_human(&entries, &diagnostics(), 5.0, true, totals).contains("2 analyzed file")
         );
         // Trimmed rows must not shrink the counts the summary line reports.
-        let shown = apply_display_limits(entries.clone(), Some(5.5), None, SortOrder::Crap);
+        let shown = apply_display_limits(
+            entries.clone(),
+            RowFilter::AtLeast(5.5),
+            None,
+            SortOrder::Crap,
+        );
         assert!(
             render_human(&shown, &diagnostics(), 5.0, false, totals)
                 .contains("1 of 2 function(s) exceed CRAP threshold 5.0.")
@@ -687,7 +861,7 @@ mod tests {
         };
         // Neither gate may depend on which rows survive `--min` or `--top`.
         let totals = DeltaTotals::new(&report, 5.0);
-        limit_delta(&mut report, Some(100.0), None);
+        limit_delta(&mut report, RowFilter::AtLeast(100.0), None);
         assert!(report.entries.is_empty());
         assert!(totals.regressed());
         assert!(totals.exceeded());

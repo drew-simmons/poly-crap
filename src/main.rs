@@ -58,7 +58,9 @@ struct Cli {
     #[arg(long, value_name = "GLOB")]
     allow: Vec<String>,
 
-    /// Hide entries whose CRAP score is below this value. Does not affect the gates.
+    /// Hide entries whose CRAP score is below this value. Human output otherwise
+    /// lists only entries over the threshold; `--min 0` lists them all.
+    /// Does not affect the gates.
     #[arg(long)]
     min: Option<f64>,
 
@@ -379,7 +381,11 @@ fn render_delta_report(
     let mut delta = baseline::compare(entries, &baseline_entries, config.epsilon, diagnostics);
     let totals = report::DeltaTotals::new(&delta, config.threshold);
     let failed = delta_gate_failed(config, totals);
-    report::limit_delta(&mut delta, config.min, config.top);
+    report::limit_delta(
+        &mut delta,
+        report::RowFilter::explicit(config.min),
+        config.top,
+    );
     let rendered = report::render_delta(
         &delta,
         config.format,
@@ -406,8 +412,8 @@ fn render_absolute_report(
         config.fail_above && report::threshold_failed(&collected.entries, config.threshold);
     let selected_units = collected.entries.len();
     let totals = report::Totals::new(&collected.entries, config.threshold);
-    let shown =
-        report::apply_display_limits(collected.entries, config.min, config.top, config.sort);
+    let filter = report::RowFilter::for_report(config.format, config.min, config.threshold);
+    let shown = report::apply_display_limits(collected.entries, filter, config.top, config.sort);
     let mut rendered = report::render_absolute(
         shown,
         collected.diagnostics,

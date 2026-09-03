@@ -226,6 +226,13 @@ jobs = 4
 published [absolute](schemas/report-v1.json) and
 [delta](schemas/delta-v1.json) schemas.
 
+Human output lists the functions over the threshold, then a summary line that
+counts every function scanned. Pass `--min 0` to list every function, or
+`--top N` for at most `N` rows. The last column names the uncovered line
+ranges inside each function, which is where a test is missing. JSON keeps
+every function regardless, so a report can serve as a baseline. SARIF carries
+only the functions over the threshold.
+
 | Code | Meaning |
 | --- | --- |
 | `0` | The scan completed and no requested gate failed. |
