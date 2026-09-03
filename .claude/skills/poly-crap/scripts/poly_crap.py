@@ -96,6 +96,8 @@ COVERAGE_CANDIDATES = [
     "coverage/lcov.info",
     "coverage/coverage.lcov",
     "coverage.out",
+    "coverage.xml",
+    "coverage/cobertura-coverage.xml",
     "target/site/jacoco/jacoco.xml",
     "build/reports/jacoco/test/jacocoTestReport.xml",
 ]

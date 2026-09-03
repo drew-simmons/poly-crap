@@ -5,8 +5,11 @@ use crate::score::crap;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
+/// Scored functions plus the counts that say how well source and coverage
+/// lined up.
 #[derive(Debug)]
 pub struct MergeResult {
+    /// Every scored function, highest score first. Not yet gated or trimmed.
     pub entries: Vec<Entry>,
     pub diagnostics: ScopeDiagnostics,
 }
@@ -21,6 +24,11 @@ enum CoverageScope {
     Matched,
 }
 
+/// Score every analyzed function against the coverage that matches its file.
+///
+/// A function whose file or lines have no coverage follows `policy`. Files in
+/// the coverage map that no source matched count as coverage-only in the
+/// diagnostics, which is what a whole-tree scan wants.
 pub fn merge(
     analysis: Analysis,
     coverage: &CoverageMap,
@@ -29,6 +37,9 @@ pub fn merge(
     merge_inner(analysis, coverage, policy, CoverageScope::All)
 }
 
+/// [`merge`] for an analysis that covered a subset of the tree, such as the
+/// files a branch changed. Coverage for files outside the subset is expected
+/// and is not reported as coverage-only.
 pub fn merge_selected(
     analysis: Analysis,
     coverage: &CoverageMap,

@@ -5,6 +5,8 @@ use quick_xml::{Reader, XmlVersion};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Coverage per file, keyed by the path exactly as the report wrote it.
+/// Matching those paths to source files is the job of [`mod@crate::merge`].
 pub type CoverageMap = HashMap<PathBuf, FileCoverage>;
 
 /// Report locations coverage tools write to by default, relative to the scan
@@ -17,6 +19,8 @@ pub const DEFAULT_REPORT_LOCATIONS: &[&str] = &[
     "coverage/lcov.info",
     "coverage/coverage.lcov",
     "coverage.out",
+    "coverage.xml",
+    "coverage/cobertura-coverage.xml",
     "target/site/jacoco/jacoco.xml",
     "build/reports/jacoco/test/jacocoTestReport.xml",
 ];
@@ -33,12 +37,15 @@ pub fn discover_reports(root: &Path) -> Vec<PathBuf> {
 type CoverageDetector = fn(&str) -> bool;
 type CoverageParser = fn(&str) -> Result<CoverageMap>;
 
-const COVERAGE_PARSERS: [(CoverageDetector, CoverageParser); 3] = [
+const COVERAGE_PARSERS: [(CoverageDetector, CoverageParser); 4] = [
     (is_go_report, parse_go),
     (is_jacoco_report, parse_jacoco),
+    (is_cobertura_report, parse_cobertura),
     (is_lcov_report, parse_lcov),
 ];
 
+/// One measured stretch of a file: a single line for line-based reports, or a
+/// statement block for Go, weighted by how many statements it holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoverageRegion {
     pub start_line: usize,
@@ -47,6 +54,7 @@ pub struct CoverageRegion {
     pub covered: bool,
 }
 
+/// Every measured region of one file, all on the same basis.
 #[derive(Debug, Clone)]
 pub struct FileCoverage {
     pub basis: CoverageBasis,
@@ -121,6 +129,9 @@ impl FileCoverage {
     }
 }
 
+/// Read and merge coverage reports, detecting each one's format from its
+/// contents. Where two reports measure the same region, a hit in either
+/// counts. Two reports on different bases for one file is an error.
 pub fn parse_coverage_files(paths: &[PathBuf]) -> Result<CoverageMap> {
     let mut output = CoverageMap::new();
     for path in paths {
@@ -148,12 +159,18 @@ fn is_jacoco_report(raw: &str) -> bool {
     raw.trim_start().starts_with('<') && raw.contains("<report")
 }
 
+fn is_cobertura_report(raw: &str) -> bool {
+    raw.trim_start().starts_with('<') && raw.contains("<coverage")
+}
+
 fn is_lcov_report(raw: &str) -> bool {
     raw.lines().any(|line| line.starts_with("SF:"))
 }
 
 fn unknown_format() -> Result<CoverageMap> {
-    bail!("unknown coverage format; expected LCOV, Go cover profile, or JaCoCo XML")
+    bail!(
+        "unknown coverage format; expected LCOV, Cobertura XML, JaCoCo XML, or a Go cover profile"
+    )
 }
 
 fn merge_maps(target: &mut CoverageMap, source: CoverageMap) -> Result<()> {
@@ -329,7 +346,7 @@ fn parse_jacoco(raw: &str) -> Result<CoverageMap> {
     let mut package = String::new();
     let mut source_file: Option<PathBuf> = None;
     let mut output = CoverageMap::new();
-    while let Some(event) = read_jacoco_event(&mut reader)? {
+    while let Some(event) = read_xml_event(&mut reader, "JaCoCo")? {
         handle_jacoco_event(event, &reader, &mut package, &mut source_file, &mut output)?;
     }
     finish_jacoco_report(output)
@@ -342,8 +359,10 @@ fn finish_jacoco_report(output: CoverageMap) -> Result<CoverageMap> {
     Ok(output)
 }
 
-fn read_jacoco_event<'a>(reader: &mut Reader<&'a [u8]>) -> Result<Option<Event<'a>>> {
-    let event = reader.read_event().context("reading JaCoCo XML")?;
+fn read_xml_event<'a>(reader: &mut Reader<&'a [u8]>, format: &str) -> Result<Option<Event<'a>>> {
+    let event = reader
+        .read_event()
+        .with_context(|| format!("reading {format} XML"))?;
     Ok((event != Event::Eof).then_some(event))
 }
 
@@ -427,6 +446,84 @@ fn jacoco_line_numbers(event: &BytesStart<'_>, reader: &Reader<&[u8]>) -> Result
     Ok((line, missed, covered))
 }
 
+fn parse_cobertura(raw: &str) -> Result<CoverageMap> {
+    let mut reader = Reader::from_str(raw);
+    reader.config_mut().trim_text(true);
+    let mut source_file: Option<PathBuf> = None;
+    let mut output = CoverageMap::new();
+    while let Some(event) = read_xml_event(&mut reader, "Cobertura")? {
+        handle_cobertura_event(event, &reader, &mut source_file, &mut output)?;
+    }
+    finish_cobertura_report(output)
+}
+
+fn finish_cobertura_report(output: CoverageMap) -> Result<CoverageMap> {
+    if output.is_empty() {
+        bail!("Cobertura report contains no lines");
+    }
+    Ok(output)
+}
+
+/// A `<class filename="…">` names the file for every `<line>` under it. The
+/// same lines appear under `<lines>` and again under each `<method>`; adding
+/// a region twice collapses the repeat.
+fn handle_cobertura_event(
+    event: Event<'_>,
+    reader: &Reader<&[u8]>,
+    source_file: &mut Option<PathBuf>,
+    output: &mut CoverageMap,
+) -> Result<()> {
+    match event {
+        Event::Start(event) | Event::Empty(event) => {
+            handle_cobertura_element(&event, reader, source_file, output)
+        }
+        Event::End(event) if event.name().as_ref() == b"class" => {
+            *source_file = None;
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn handle_cobertura_element(
+    event: &BytesStart<'_>,
+    reader: &Reader<&[u8]>,
+    source_file: &mut Option<PathBuf>,
+    output: &mut CoverageMap,
+) -> Result<()> {
+    match event.name().as_ref() {
+        b"class" => {
+            *source_file = attribute(event, b"filename", reader)?.map(|name| portable_path(&name));
+            Ok(())
+        }
+        b"line" => add_cobertura_line(event, reader, source_file, output),
+        _ => Ok(()),
+    }
+}
+
+fn add_cobertura_line(
+    event: &BytesStart<'_>,
+    reader: &Reader<&[u8]>,
+    source_file: &Option<PathBuf>,
+    output: &mut CoverageMap,
+) -> Result<()> {
+    let path = source_file
+        .as_ref()
+        .ok_or_else(|| anyhow!("Cobertura line appeared outside class"))?;
+    let line = required_number(event, b"number", reader)?;
+    let hits = required_number(event, b"hits", reader)?;
+    output
+        .entry(path.clone())
+        .or_insert_with(|| FileCoverage::new(CoverageBasis::Line))
+        .add(CoverageRegion {
+            start_line: line as usize,
+            end_line: line as usize,
+            units: 1,
+            covered: hits > 0,
+        });
+    Ok(())
+}
+
 fn attribute(
     event: &BytesStart<'_>,
     name: &[u8],
@@ -453,9 +550,9 @@ fn decode_attribute(
 
 fn required_number(event: &BytesStart<'_>, name: &[u8], reader: &Reader<&[u8]>) -> Result<u64> {
     attribute(event, name, reader)?
-        .ok_or_else(|| anyhow!("JaCoCo line is missing {}", String::from_utf8_lossy(name)))?
+        .ok_or_else(|| anyhow!("coverage line is missing {}", String::from_utf8_lossy(name)))?
         .parse::<u64>()
-        .with_context(|| format!("invalid JaCoCo {}", String::from_utf8_lossy(name)))
+        .with_context(|| format!("invalid coverage line {}", String::from_utf8_lossy(name)))
 }
 
 fn portable_path(value: &str) -> PathBuf {
@@ -512,9 +609,37 @@ mod tests {
     }
 
     #[test]
+    fn parses_cobertura_lines_once_per_file() {
+        let xml = concat!(
+            r#"<?xml version="1.0"?><coverage line-rate="0.5"><sources><source>/repo</source></sources>"#,
+            r#"<packages><package name="pkg"><classes><class name="mod" filename="pkg/mod.py">"#,
+            r#"<methods><method name="f"><lines><line number="2" hits="1"/></lines></method></methods>"#,
+            r#"<lines><line number="2" hits="1"/>"#,
+            r#"<line number="3" hits="0" branch="true" condition-coverage="50% (1/2)">"#,
+            r#"<conditions><condition number="0" type="jump" coverage="50%"/></conditions></line>"#,
+            r#"</lines></class></classes></package></packages></coverage>"#,
+        );
+        let coverage = parse_cobertura(xml).unwrap();
+        let file = &coverage[Path::new("pkg/mod.py")];
+        assert_eq!(
+            file.regions.len(),
+            2,
+            "the method's copy of line 2 was counted twice"
+        );
+        assert_eq!(file.coverage_in_span(1, 4), Some(50.0));
+        assert!(parse_cobertura("<coverage></coverage>").is_err());
+    }
+
+    #[test]
     fn detects_each_coverage_format() {
         assert!(parse_coverage("mode: set\na.go:1.1,1.2 1 1\n").is_ok());
         assert!(parse_coverage("SF:a.rs\nDA:1,1\nend_of_record\n").is_ok());
+        assert!(
+            parse_coverage(
+                "<coverage><packages><package name=\"p\"><classes><class name=\"c\" filename=\"a.py\"><lines><line number=\"1\" hits=\"1\"/></lines></class></classes></package></packages></coverage>"
+            )
+            .is_ok()
+        );
         assert!(
             parse_coverage(
                 "<report><package name=\"\"><sourcefile name=\"A.java\"><line nr=\"1\" mi=\"0\" ci=\"1\"/></sourcefile></package></report>"
@@ -535,11 +660,13 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("coverage")).unwrap();
         std::fs::write(dir.path().join("coverage/lcov.info"), "").unwrap();
         std::fs::write(dir.path().join("coverage.out"), "").unwrap();
+        std::fs::write(dir.path().join("coverage.xml"), "").unwrap();
         assert_eq!(
             discover_reports(dir.path()),
             [
                 dir.path().join("coverage/lcov.info"),
                 dir.path().join("coverage.out"),
+                dir.path().join("coverage.xml"),
             ]
         );
     }

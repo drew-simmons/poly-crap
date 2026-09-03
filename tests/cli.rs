@@ -439,6 +439,43 @@ fn coverage_is_discovered_at_default_locations() {
 }
 
 #[test]
+fn cobertura_report_is_discovered_and_read() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir.path().join("pkg/mod.py"),
+        "def run(x):\n    if x:\n        return 1\n    return 0\n",
+    );
+    // What `coverage xml` writes: paths relative to a <source>, and the same
+    // lines listed under the class and again under each method.
+    write(
+        &dir.path().join("coverage.xml"),
+        concat!(
+            "<?xml version=\"1.0\" ?>\n<coverage version=\"7.4\" line-rate=\"0.75\">",
+            "<sources><source>/somewhere/else</source></sources>",
+            "<packages><package name=\"pkg\"><classes>",
+            "<class name=\"mod.py\" filename=\"pkg/mod.py\">",
+            "<methods><method name=\"run\"><lines><line number=\"1\" hits=\"1\"/></lines></method></methods>",
+            "<lines><line number=\"1\" hits=\"1\"/><line number=\"2\" hits=\"1\"/>",
+            "<line number=\"3\" hits=\"0\"/><line number=\"4\" hits=\"1\"/></lines>",
+            "</class></classes></package></packages></coverage>\n",
+        ),
+    );
+    let output = cargo_bin_cmd!("poly-crap")
+        .args(["--path", dir.path().to_str().unwrap(), "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["entries"][0]["coverage"], 75.0, "{report}");
+    assert_eq!(report["entries"][0]["coverage_basis"], "line", "{report}");
+    assert_eq!(report["diagnostics"]["matched_files"], 1, "{report}");
+}
+
+#[test]
 fn explicit_coverage_and_opt_out_disable_discovery() {
     let dir = tempfile::tempdir().unwrap();
     write(&dir.path().join("app.py"), "def run(x):\n    return x\n");

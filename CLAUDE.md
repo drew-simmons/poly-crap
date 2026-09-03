@@ -42,7 +42,7 @@ config::load        .poly-crap.toml found by walking up from --path
   ↓                 EffectiveConfig merges CLI over file over defaults
 analysis            tree-sitter parse → Vec<CodeUnit> (symbol, span, complexity)
   ↓
-coverage            parse LCOV / Go profile / JaCoCo → CoverageMap
+coverage            parse LCOV / Cobertura / JaCoCo / Go profile → CoverageMap
   ↓
 merge               CodeUnit × coverage → Entry (adds coverage, score)
   ↓
