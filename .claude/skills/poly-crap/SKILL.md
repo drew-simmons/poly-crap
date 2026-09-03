@@ -318,7 +318,10 @@ The rest come from poly-crap's README and are printed as suggestions. Neither
   json 2>&1 | jq` dies with `Invalid numeric literal` as soon as a coverage
   scope mismatch fires. Use `2>/dev/null`. The script keeps the streams apart.
 - **SARIF carries only threshold violations; JSON carries every function.** An
-  empty SARIF `results` array does not mean the scan found nothing.
+  empty SARIF `results` array does not mean the scan found nothing. Newer
+  binaries print the same subset in human output, with a `N more function(s)
+  not shown` line under the table; `--min 0` lists every function, and the last
+  column names the uncovered line ranges.
 - **`tests/`, `node_modules/`, and `*_test.go` are excluded by default**, along
   with hidden directories — which is why this skill under `.claude/` never
   shows up in its own report. `DEFAULT_EXCLUDES` lives at `src/config.rs:9`;

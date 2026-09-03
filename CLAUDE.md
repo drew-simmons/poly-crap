@@ -67,7 +67,9 @@ dropping a row before the gate would let a failing function exit 0. Apply them
 with `apply_display_limits` or `limit_delta` after the gate has run. Tests
 `display_limits_do_not_hide_*` in `tests/cli.rs` guard this. Baseline runs
 gate on both `--fail-regression` and `--fail-above`; `report::DeltaTotals`
-counts both before `limit_delta` trims rows.
+counts both before `limit_delta` trims rows. `report::RowFilter` picks the
+rows: human output defaults to the failing ones, JSON and SARIF to every one,
+because a JSON report has to hold every entry to serve as a baseline.
 
 **`Language` is an array index.** `Language::index()` keys parallel `[_; 6]`
 consts: `NAMES` and `EXTENSIONS` in `model.rs`, `GRAMMAR_LOADERS`,

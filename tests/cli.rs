@@ -249,6 +249,47 @@ fn display_limits_do_not_hide_threshold_failures_from_the_gate() {
 }
 
 #[test]
+fn human_output_lists_failing_rows_unless_min_is_set() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir.path().join("app.py"),
+        "def simple():\n    return 0\n\ndef run(x):\n    if x:\n        if x > 1:\n            if x > 2:\n                return 1\n    return 0\n",
+    );
+    write(
+        &dir.path().join("coverage.lcov"),
+        "SF:app.py\nDA:1,1\nDA:2,1\nDA:4,1\nDA:5,1\nDA:6,0\nDA:7,0\nDA:8,0\nDA:9,1\nend_of_record\n",
+    );
+    // `run` scores 6.0 at 50% coverage and `simple` 1.0, so the default table
+    // holds one row, says what it left out, and points at the untested lines.
+    let human = cargo_bin_cmd!("poly-crap")
+        .args(["--path", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(human.stdout).unwrap();
+    assert!(stdout.contains("  run  "), "{stdout}");
+    assert!(!stdout.contains("  simple  "), "{stdout}");
+    assert!(stdout.contains("app.py:4  6-8"), "{stdout}");
+    assert!(stdout.contains("1 more function(s) not shown"), "{stdout}");
+    assert!(stdout.contains("1 of 2 function(s) exceed"), "{stdout}");
+
+    let all = cargo_bin_cmd!("poly-crap")
+        .args(["--path", dir.path().to_str().unwrap(), "--min", "0"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(all.stdout).unwrap();
+    assert!(stdout.contains("  simple  "), "{stdout}");
+    assert!(!stdout.contains("not shown"), "{stdout}");
+
+    // JSON keeps every entry, or a report could not serve as a baseline.
+    let json = cargo_bin_cmd!("poly-crap")
+        .args(["--path", dir.path().to_str().unwrap(), "--format", "json"])
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(report["entries"].as_array().unwrap().len(), 2, "{report}");
+}
+
+#[test]
 fn display_limits_do_not_hide_regressions_from_the_gate() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("app.py");
