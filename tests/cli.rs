@@ -154,6 +154,55 @@ fn baseline_delta_matches_schema_and_can_fail() {
 }
 
 #[test]
+fn baseline_runs_honor_fail_above_for_new_functions() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("app.py");
+    let baseline = dir.path().join("baseline.json");
+    write(&source, "def simple(x):\n    return x\n");
+    cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+            "--output",
+            baseline.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    write(
+        &source,
+        "def simple(x):\n    return x\n\ndef risky(a, b, c, d):\n    if a:\n        if b:\n            if c:\n                if d:\n                    return 1\n    return 0\n",
+    );
+    // `risky` is new, so it has no baseline score to rise from. Only the
+    // threshold gate can fail it, and the summary has to say why.
+    cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--baseline",
+            baseline.to_str().unwrap(),
+            "--fail-regression",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "1 of 2 function(s) exceed CRAP threshold 5.0.",
+        ));
+    cargo_bin_cmd!("poly-crap")
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--baseline",
+            baseline.to_str().unwrap(),
+            "--fail-above",
+        ])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("0 regression(s) found."));
+}
+
+#[test]
 fn config_is_found_from_a_subdirectory_with_a_relative_path() {
     // `--path` defaults to `.`, and `Path::ancestors` on a relative path stops
     // at that path, so the search has to start from an absolute directory for

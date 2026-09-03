@@ -65,7 +65,9 @@ Two branches hang off that spine:
 `--allow` and nothing else, because `--min` and `--top` are display limits —
 dropping a row before the gate would let a failing function exit 0. Apply them
 with `apply_display_limits` or `limit_delta` after the gate has run. Tests
-`display_limits_do_not_hide_*` in `tests/cli.rs` guard this.
+`display_limits_do_not_hide_*` in `tests/cli.rs` guard this. Baseline runs
+gate on both `--fail-regression` and `--fail-above`; `report::DeltaTotals`
+counts both before `limit_delta` trims rows.
 
 **`Language` is an array index.** `Language::index()` keys parallel `[_; 6]`
 consts: `NAMES` and `EXTENSIONS` in `model.rs`, `GRAMMAR_LOADERS`,
@@ -86,7 +88,10 @@ while walking siblings.
 **Path matching is fuzzy on purpose.** `merge::lookup_coverage` tries a
 canonical absolute match, then the longest *unique* path suffix, because
 coverage tools report paths relative to their own roots. Ambiguous suffixes
-stay unmatched. `report::matches_path` tries both the reported path and its
+stay unmatched, and a one-component suffix is trusted only when the reported
+path is itself a bare file name (`TRUSTED_SUFFIX` in `merge.rs`), so
+`pkg_a/util.py` never borrows `pkg_b/util.py`. `report::matches_path` tries
+both the reported path and its
 root-relative form for the same reason.
 
 **JSON output is a published contract.** `schemas/report-v1.json` and

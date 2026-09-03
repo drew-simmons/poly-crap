@@ -261,33 +261,50 @@ fn canonical_match<'a>(
     exact.next().is_none().then_some(found)
 }
 
+/// Shortest suffix a match may rest on when the report keeps a directory.
+const TRUSTED_SUFFIX: usize = 2;
+
+/// The coverage entry sharing the longest trusted path suffix, if it is unique.
+///
+/// A match on the file name alone is only trusted when the report names the
+/// file that way, as `SF:app.py` does. Otherwise `pkg_a/util.py` would borrow
+/// the coverage of `pkg_b/util.py` whenever the tests never imported the
+/// first, which is exactly the file the scan exists to flag. Reports that
+/// keep a module prefix, such as Go's `github.com/org/repo/pkg/util.go`,
+/// still match through the directory above the file.
 fn suffix_match<'a>(
     source: &Path,
     coverage: &'a CoverageMap,
 ) -> Option<(&'a PathBuf, &'a FileCoverage)> {
-    let best_score = coverage
-        .keys()
-        .map(|path| common_suffix(source, path))
-        .max()
-        .unwrap_or(0);
-    if best_score == 0 {
-        return None;
-    }
-    let mut matches = coverage
+    let source = normal_components(source);
+    let scored: Vec<_> = coverage
         .iter()
-        .filter(|(path, _)| common_suffix(source, path) == best_score);
-    let found = matches.next()?;
-    matches.next().is_none().then_some(found)
+        .filter_map(|(path, file)| suffix_score(&source, path).map(|score| (score, path, file)))
+        .collect();
+    let best = scored.iter().map(|(score, _, _)| *score).max()?;
+    let mut matches = scored.iter().filter(|(score, _, _)| *score == best);
+    let (_, path, file) = matches.next().copied()?;
+    matches.next().is_none().then_some((path, file))
 }
 
-fn common_suffix(left: &Path, right: &Path) -> usize {
-    let left: Vec<_> = left.components().filter_map(normal_component).collect();
-    let right: Vec<_> = right.components().filter_map(normal_component).collect();
-    left.iter()
+/// Trailing components `source` shares with a reported path, when enough to trust.
+fn suffix_score(source: &[String], reported: &Path) -> Option<usize> {
+    let reported = normal_components(reported);
+    let shared = source
+        .iter()
         .rev()
-        .zip(right.iter().rev())
+        .zip(reported.iter().rev())
         .take_while(|(a, b)| a == b)
-        .count()
+        .count();
+    trusted_suffix(shared, reported.len()).then_some(shared)
+}
+
+fn trusted_suffix(shared: usize, reported_len: usize) -> bool {
+    shared >= TRUSTED_SUFFIX || (shared > 0 && shared == reported_len)
+}
+
+fn normal_components(path: &Path) -> Vec<String> {
+    path.components().filter_map(normal_component).collect()
 }
 
 fn normal_component(component: Component<'_>) -> Option<String> {
@@ -350,13 +367,50 @@ mod tests {
         assert_eq!(result.diagnostics.matched_files, 1);
     }
 
+    fn covered_file(path: &str) -> (PathBuf, FileCoverage) {
+        (
+            PathBuf::from(path),
+            FileCoverage {
+                basis: CoverageBasis::Line,
+                regions: vec![CoverageRegion {
+                    start_line: 1,
+                    end_line: 1,
+                    units: 1,
+                    covered: true,
+                }],
+            },
+        )
+    }
+
+    fn coverage_of(source: &str, reported: &str) -> Option<f64> {
+        let coverage: CoverageMap = [covered_file(reported)].into_iter().collect();
+        let mut analysis = analysis();
+        analysis.units[0].file = PathBuf::from(source);
+        merge(analysis, &coverage, MissingCoveragePolicy::Pessimistic).entries[0].coverage
+    }
+
+    #[test]
+    fn a_shared_file_name_alone_does_not_borrow_coverage() {
+        // The tests never imported `pkg_a`, so the report only knows `pkg_b`.
+        // Matching on `util.py` would hand the untested file a clean score.
+        assert_eq!(coverage_of("./pkg_a/util.py", "pkg_b/util.py"), None);
+        // A report that names the file bare, as `SF:app.py` does, still matches.
+        assert_eq!(coverage_of("./app.py", "app.py"), Some(100.0));
+        assert_eq!(coverage_of("./sub/app.py", "app.py"), Some(100.0));
+        // A module prefix still matches through the directory above the file.
+        assert_eq!(
+            coverage_of("/work/repo/pkg/util.go", "example.com/m/pkg/util.go"),
+            Some(100.0)
+        );
+    }
+
     #[test]
     fn selected_runs_keep_ambiguous_coverage_unmatched() {
-        // Two coverage files tie on the `util.py` suffix, so neither is a
+        // Two coverage files tie on the `lib/util.py` suffix, so neither is a
         // safe match. Narrowing the map for a selected run must not turn that
         // tie into a unique match against the wrong file.
         let mut coverage = HashMap::new();
-        for name in ["x/util.py", "y/util.py"] {
+        for name in ["x/lib/util.py", "y/lib/util.py"] {
             coverage.insert(
                 PathBuf::from(name),
                 FileCoverage {
@@ -370,13 +424,13 @@ mod tests {
                 },
             );
         }
-        // `a/util.py` ties between both coverage files. `x/util.py` matches
-        // one of them outright, which is what puts that file into the scoped
-        // map and lets the tie resolve against the wrong source.
+        // `a/lib/util.py` ties between both coverage files. `x/lib/util.py`
+        // matches one of them outright, which is what puts that file into the
+        // scoped map and lets the tie resolve against the wrong source.
         let mut analysis = analysis();
-        analysis.units[0].file = PathBuf::from("a/util.py");
+        analysis.units[0].file = PathBuf::from("a/lib/util.py");
         let mut sibling = analysis.units[0].clone();
-        sibling.file = PathBuf::from("x/util.py");
+        sibling.file = PathBuf::from("x/lib/util.py");
         analysis.units.push(sibling);
 
         let full = merge(
@@ -397,7 +451,7 @@ mod tests {
         result
             .entries
             .iter()
-            .find(|entry| entry.file == PathBuf::from("a/util.py"))
+            .find(|entry| entry.file == PathBuf::from("a/lib/util.py"))
             .expect("ambiguous entry is present")
             .coverage
     }

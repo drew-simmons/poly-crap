@@ -215,13 +215,56 @@ pub struct Totals {
 impl Totals {
     #[must_use]
     pub fn new(entries: &[Entry], threshold: f64) -> Self {
+        Self::from_scores(entries.iter().map(|entry| entry.score), threshold)
+    }
+
+    fn from_scores(scores: impl ExactSizeIterator<Item = f64>, threshold: f64) -> Self {
         Self {
-            failures: entries
-                .iter()
-                .filter(|entry| entry.score > threshold)
-                .count(),
-            total: entries.len(),
+            total: scores.len(),
+            failures: scores.filter(|score| *score > threshold).count(),
         }
+    }
+}
+
+/// Counts for the delta summary lines, measured before display limits apply.
+///
+/// Both baseline gates read these counts, so a row trimmed by `--min` or
+/// `--top` still fails the run and still shows up in the summary.
+#[derive(Debug, Clone, Copy)]
+pub struct DeltaTotals {
+    regressions: usize,
+    scores: Totals,
+}
+
+impl DeltaTotals {
+    #[must_use]
+    pub fn new(report: &DeltaReport, threshold: f64) -> Self {
+        Self {
+            regressions: report
+                .entries
+                .iter()
+                .filter(|entry| entry.status == DeltaStatus::Regressed)
+                .count(),
+            scores: Totals::from_scores(
+                report.entries.iter().map(|entry| entry.current.score),
+                threshold,
+            ),
+        }
+    }
+
+    /// True when a score rose from the baseline by more than epsilon.
+    #[must_use]
+    pub const fn regressed(&self) -> bool {
+        self.regressions > 0
+    }
+
+    /// True when a current score is above the threshold.
+    ///
+    /// A new function has no baseline to rise from, so this is the only gate
+    /// that can catch one.
+    #[must_use]
+    pub const fn exceeded(&self) -> bool {
+        self.scores.failures > 0
     }
 }
 
@@ -252,9 +295,15 @@ pub fn render_absolute(
     }
 }
 
-pub fn render_delta(report: &DeltaReport, format: OutputFormat, summary: bool) -> Result<String> {
+pub fn render_delta(
+    report: &DeltaReport,
+    format: OutputFormat,
+    threshold: f64,
+    summary: bool,
+    totals: DeltaTotals,
+) -> Result<String> {
     match format {
-        OutputFormat::Human => Ok(render_delta_human(report, summary)),
+        OutputFormat::Human => Ok(render_delta_human(report, threshold, summary, totals)),
         OutputFormat::Json => serde_json::to_string_pretty(&DeltaEnvelope {
             schema: DELTA_SCHEMA,
             version: env!("CARGO_PKG_VERSION"),
@@ -298,6 +347,10 @@ fn render_crap_section(
             render_crap_entry(output, entry);
         }
     }
+    append_threshold_summary(output, totals, threshold);
+}
+
+fn append_threshold_summary(output: &mut Vec<u8>, totals: Totals, threshold: f64) {
     writeln!(
         output,
         "{} of {} function(s) exceed CRAP threshold {threshold:.1}.",
@@ -324,18 +377,19 @@ fn render_crap_entry(output: &mut Vec<u8>, entry: &Entry) {
     .unwrap();
 }
 
-fn render_delta_human(report: &DeltaReport, summary: bool) -> String {
+fn render_delta_human(
+    report: &DeltaReport,
+    threshold: f64,
+    summary: bool,
+    totals: DeltaTotals,
+) -> String {
     let mut output = Vec::new();
     writeln!(output, "Changes since baseline").unwrap();
     if !summary {
         render_delta_rows(&mut output, report);
     }
-    let regressions = report
-        .entries
-        .iter()
-        .filter(|entry| entry.status == DeltaStatus::Regressed)
-        .count();
-    writeln!(output, "{regressions} regression(s) found.").unwrap();
+    writeln!(output, "{} regression(s) found.", totals.regressions).unwrap();
+    append_threshold_summary(&mut output, totals.scores, threshold);
     append_scope_summary(&mut output, &report.diagnostics);
     String::from_utf8(output).expect("human report is UTF-8")
 }
@@ -444,14 +498,6 @@ fn render_sarif(entries: &[Entry], threshold: f64) -> Result<String> {
 #[must_use]
 pub fn threshold_failed(entries: &[Entry], threshold: f64) -> bool {
     entries.iter().any(|entry| entry.score > threshold)
-}
-
-#[must_use]
-pub fn regression_failed(report: &DeltaReport) -> bool {
-    report
-        .entries
-        .iter()
-        .any(|entry| entry.status == DeltaStatus::Regressed)
 }
 
 #[cfg(test)]
@@ -609,9 +655,47 @@ mod tests {
             }],
             diagnostics: diagnostics(),
         };
-        let rendered = render_delta_human(&report, false);
+        let totals = DeltaTotals::new(&report, 5.0);
+        let rendered = render_delta_human(&report, 5.0, false, totals);
         assert!(rendered.contains("regressed"));
         assert!(rendered.contains("removed"));
-        assert!(render_delta_human(&report, true).contains("1 regression"));
+        assert!(rendered.contains("1 of 1 function(s) exceed CRAP threshold 5.0."));
+        assert!(render_delta_human(&report, 5.0, true, totals).contains("1 regression"));
+    }
+
+    #[test]
+    fn delta_totals_are_counted_before_display_limits() {
+        let mut report = DeltaReport {
+            entries: vec![
+                DeltaEntry {
+                    current: entry(8.0),
+                    baseline_score: Some(4.0),
+                    delta: Some(4.0),
+                    status: DeltaStatus::Regressed,
+                    previous_file: None,
+                },
+                DeltaEntry {
+                    current: entry(3.0),
+                    baseline_score: None,
+                    delta: None,
+                    status: DeltaStatus::New,
+                    previous_file: None,
+                },
+            ],
+            removed: Vec::new(),
+            diagnostics: diagnostics(),
+        };
+        // Neither gate may depend on which rows survive `--min` or `--top`.
+        let totals = DeltaTotals::new(&report, 5.0);
+        limit_delta(&mut report, Some(100.0), None);
+        assert!(report.entries.is_empty());
+        assert!(totals.regressed());
+        assert!(totals.exceeded());
+        let trimmed = DeltaTotals::new(&report, 5.0);
+        assert!(!trimmed.regressed());
+        assert!(!trimmed.exceeded());
+        let rendered = render_delta_human(&report, 5.0, false, totals);
+        assert!(rendered.contains("1 regression(s) found."));
+        assert!(rendered.contains("1 of 2 function(s) exceed CRAP threshold 5.0."));
     }
 }

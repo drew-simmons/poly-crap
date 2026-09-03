@@ -164,8 +164,11 @@ poly-crap --missing skip
 ```
 
 When source and coverage paths differ, poly-crap matches canonical absolute
-paths first and then the longest unique path suffix. It warns when source and
-coverage scopes do not match.
+paths first and then the longest unique path suffix. A suffix must cover at
+least the file name and its directory, unless the report names the file with
+no directory at all, as `SF:app.py` does. Otherwise a file the tests never
+ran, such as `pkg_a/util.py`, could borrow the coverage of `pkg_b/util.py`.
+Poly-crap warns when source and coverage scopes do not match.
 
 ### Baseline checks
 
@@ -184,8 +187,22 @@ poly-crap \
   --fail-regression
 ```
 
+`--fail-regression` fails the run when a score rises by more than `--epsilon`,
+which defaults to `0.01`. It says nothing about a function that is new since
+the baseline, because there is no earlier score to rise from. Add
+`--fail-above` to fail on any current score over the threshold, new or old:
+
+```sh
+poly-crap \
+  --coverage coverage.lcov \
+  --baseline poly-crap.json \
+  --fail-regression \
+  --fail-above
+```
+
 New, improved, regressed, unchanged, moved, and removed functions appear in
-delta JSON.
+delta JSON. Human output ends with the regression count and the same
+threshold summary line as an absolute report.
 
 ### Configuration
 

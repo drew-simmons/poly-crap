@@ -377,10 +377,24 @@ fn render_delta_report(
 ) -> Result<(String, bool)> {
     let baseline_entries = report::filter_allowed(baseline::load(path)?, &config.allow, root)?;
     let mut delta = baseline::compare(entries, &baseline_entries, config.epsilon, diagnostics);
-    let failed = config.fail_regression && report::regression_failed(&delta);
+    let totals = report::DeltaTotals::new(&delta, config.threshold);
+    let failed = delta_gate_failed(config, totals);
     report::limit_delta(&mut delta, config.min, config.top);
-    let rendered = report::render_delta(&delta, config.format, config.summary)?;
+    let rendered = report::render_delta(
+        &delta,
+        config.format,
+        config.threshold,
+        config.summary,
+        totals,
+    )?;
     Ok((rendered, failed))
+}
+
+/// Both gates apply to a baseline run. `--fail-regression` catches a score
+/// that rose, and `--fail-above` catches a score over the threshold. A new
+/// function has no baseline to rise from, so only the second can fail it.
+fn delta_gate_failed(config: &EffectiveConfig, totals: report::DeltaTotals) -> bool {
+    (config.fail_regression && totals.regressed()) || (config.fail_above && totals.exceeded())
 }
 
 fn render_absolute_report(
