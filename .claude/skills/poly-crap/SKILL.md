@@ -279,8 +279,10 @@ Poly-crap reads reports; it never runs your tests. Without one, every function
 counts as 0% covered and the scores are meaningless. Both the script and newer
 binaries look for reports on their own — at the locations in the Report column
 below, plus `lcov.info` and `coverage/coverage.lcov` (`COVERAGE_CANDIDATES` in
-the script, `DEFAULT_REPORT_LOCATIONS` in `src/coverage.rs`). `check` prints
-the right command for your stack:
+the script, `DEFAULT_REPORT_LOCATIONS` in `src/coverage.rs`). The README's
+"Coverage reports" section is the reference for these commands and for how
+report paths are matched to source; `check` prints the right one for your
+stack:
 
 | Marker | Stack | Command | Report |
 | --- | --- | --- | --- |
