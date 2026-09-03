@@ -34,13 +34,23 @@ fn init(directory: &Path) {
     git(directory, &["config", "commit.gpgsign", "false"]);
 }
 
+/// The binary with the color environment scrubbed, so a developer's
+/// `CLICOLOR_FORCE` or `NO_COLOR` cannot change what a test sees.
+fn poly_crap() -> assert_cmd::Command {
+    let mut command = cargo_bin_cmd!("poly-crap");
+    for name in ["NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"] {
+        command.env_remove(name);
+    }
+    command
+}
+
 fn commit_all(directory: &Path, message: &str) {
     git(directory, &["add", "."]);
     git(directory, &["commit", "-m", message]);
 }
 
 fn json_report(directory: &Path, extra: &[&str]) -> Value {
-    let mut command = cargo_bin_cmd!("poly-crap");
+    let mut command = poly_crap();
     command.args([
         "--path",
         directory.to_str().unwrap(),
@@ -90,7 +100,7 @@ fn reports_only_the_changed_function_and_gates_it() {
     let validator = jsonschema::validator_for(&schema).unwrap();
     assert!(validator.is_valid(&report));
 
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -102,9 +112,11 @@ fn reports_only_the_changed_function_and_gates_it() {
         ])
         .assert()
         .code(1)
-        .stdout(predicate::str::contains("1 selected unit(s)"));
+        .stdout(predicate::str::contains(
+            "1 changed file, 1 function selected.",
+        ));
 
-    let sarif = cargo_bin_cmd!("poly-crap")
+    let sarif = poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -353,7 +365,7 @@ fn an_inherited_git_dir_does_not_redirect_the_diff() {
         "def edited(x):\n    if x:\n        return x\n    return 0\n",
     );
 
-    let mut command = cargo_bin_cmd!("poly-crap");
+    let mut command = poly_crap();
     command.env("GIT_DIR", other.path().join(".git")).args([
         "--path",
         dir.path().to_str().unwrap(),
@@ -376,7 +388,7 @@ fn an_inherited_git_dir_does_not_redirect_the_diff() {
 fn rejects_invalid_git_inputs_and_baseline_pairs() {
     let plain = tempfile::tempdir().unwrap();
     write(&plain.path().join("app.py"), "def app(x):\n    return x\n");
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args([
             "--path",
             plain.path().to_str().unwrap(),
@@ -391,7 +403,7 @@ fn rejects_invalid_git_inputs_and_baseline_pairs() {
     init(repo.path());
     write(&repo.path().join("app.py"), "def app(x):\n    return x\n");
     commit_all(repo.path(), "base");
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args([
             "--path",
             repo.path().to_str().unwrap(),
@@ -402,7 +414,7 @@ fn rejects_invalid_git_inputs_and_baseline_pairs() {
         .code(2)
         .stderr(predicate::str::contains("invalid Git diff base 'missing'"));
 
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args([
             "--path",
             repo.path().to_str().unwrap(),
@@ -421,7 +433,7 @@ fn rejects_invalid_git_inputs_and_baseline_pairs() {
         &repo.path().join(".poly-crap.toml"),
         "fail-regression = true\n",
     );
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args([
             "--path",
             repo.path().to_str().unwrap(),

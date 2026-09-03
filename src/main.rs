@@ -5,7 +5,8 @@ use clap::{Parser, error::ErrorKind};
 use poly_crap::baseline;
 use poly_crap::config::{self, EffectiveConfig, Overrides};
 use poly_crap::model::{Entry, Language, MissingCoveragePolicy, ScopeDiagnostics};
-use poly_crap::report::{self, OutputFormat, SortOrder};
+use poly_crap::report::{self, OutputFormat, Presentation, SortOrder};
+use poly_crap::style::{self, ColorMode, Theme};
 use poly_crap::{
     Analysis, analyze_paths, analyze_tree, discover_reports, merge, merge_selected,
     parse_coverage_files,
@@ -105,9 +106,30 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     output: Option<PathBuf>,
 
+    /// When to color output: auto, always, or never. Auto colors a terminal
+    /// and honors NO_COLOR.
+    #[arg(long, value_enum, default_value_t, value_name = "WHEN")]
+    color: ColorMode,
+
     /// Maximum source parsing threads.
     #[arg(long)]
     jobs: Option<usize>,
+}
+
+impl Cli {
+    /// Colors for the report. Under `auto`, a report written to a file gets
+    /// none, whatever stdout is.
+    fn stdout_theme(&self) -> Theme {
+        Theme::resolve(self.color, || {
+            self.output.is_none() && style::stream_wants_color(&std::io::stdout())
+        })
+    }
+
+    /// Colors for warnings and notes, judged on stderr's own terminal, so
+    /// `--format json | jq` keeps a colored stderr.
+    fn stderr_theme(&self) -> Theme {
+        Theme::resolve(self.color, || style::stream_wants_color(&std::io::stderr()))
+    }
 }
 
 fn main() -> ExitCode {
@@ -134,11 +156,12 @@ fn parse_and_run(parsed: clap::error::Result<Cli>) -> ExitCode {
 }
 
 fn run_and_exit(cli: Cli) -> ExitCode {
+    let stderr = cli.stderr_theme();
     match run(cli) {
         Ok(true) => ExitCode::from(1),
         Ok(false) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: {error:#}");
+            eprintln!("{}", style::error(stderr, format!("{error:#}")));
             ExitCode::from(2)
         }
     }
@@ -164,10 +187,11 @@ struct Collected {
 }
 
 fn collect_entries(cli: &Cli, config: &EffectiveConfig) -> Result<Collected> {
+    let stderr = cli.stderr_theme();
     let (analysis, diff) = analyze_sources(cli, config)?;
-    warn_diagnostics(&analysis);
-    warn_stale_coverage(&config.coverage, &analysis);
-    let merged = merge_sources(analysis, config, diff.is_some())?;
+    warn_diagnostics(&analysis, stderr);
+    warn_stale_coverage(&config.coverage, &analysis, stderr);
+    let merged = merge_sources(analysis, config, diff.is_some(), stderr)?;
     let entries = gate_entries(merged.entries, &cli.path, config)?;
     Ok(Collected {
         entries,
@@ -207,24 +231,23 @@ fn discover_missing_coverage(cli: &Cli, config: &mut EffectiveConfig) {
         return;
     }
     config.coverage = discover_reports(&cli.path);
-    note_discovery(&config.coverage, config.missing);
+    note_discovery(&config.coverage, config.missing, cli.stderr_theme());
 }
 
-fn note_discovery(reports: &[PathBuf], missing: MissingCoveragePolicy) {
+fn note_discovery(reports: &[PathBuf], missing: MissingCoveragePolicy, theme: Theme) {
     if reports.is_empty() {
         let policy = format!("{missing:?}").to_lowercase();
-        eprintln!(
-            "warning: no coverage report found; every function follows the --missing policy ({policy})"
+        let message = format!(
+            "no coverage report found; every function follows the --missing policy ({policy})"
         );
+        eprintln!("{}", style::warning(theme, message));
     } else {
         let listed: Vec<_> = reports
             .iter()
             .map(|path| path.display().to_string())
             .collect();
-        eprintln!(
-            "note: using discovered coverage report(s): {}",
-            listed.join(", ")
-        );
+        let message = format!("using discovered coverage report(s): {}", listed.join(", "));
+        eprintln!("{}", style::note(theme, message));
     }
 }
 
@@ -306,9 +329,9 @@ fn ensure_any_parsed(analysis: &Analysis) -> Result<()> {
     Ok(())
 }
 
-fn warn_diagnostics(analysis: &Analysis) {
+fn warn_diagnostics(analysis: &Analysis, theme: Theme) {
     for diagnostic in &analysis.diagnostics {
-        eprintln!("warning: {}", diagnostic.message);
+        eprintln!("{}", style::warning(theme, &diagnostic.message));
     }
 }
 
@@ -317,13 +340,14 @@ fn warn_diagnostics(analysis: &Analysis) {
 /// Auto-discovery makes it easy to score today's code against last week's
 /// report. Modification times are a rough guide, but a report older than a
 /// file it should cover cannot be right, and the mistake is otherwise silent.
-fn warn_stale_coverage(reports: &[PathBuf], analysis: &Analysis) {
+fn warn_stale_coverage(reports: &[PathBuf], analysis: &Analysis, theme: Theme) {
     let newest = newest_modification(analysis.units.iter().map(|unit| unit.file.as_path()));
     for report in reports.iter().filter(|report| is_older(report, newest)) {
-        eprintln!(
-            "warning: coverage report {} is older than the source it covers; regenerate it",
+        let message = format!(
+            "coverage report {} is older than the source it covers; regenerate it",
             report.display()
         );
+        eprintln!("{}", style::warning(theme, message));
     }
 }
 
@@ -348,10 +372,11 @@ fn merge_sources(
     analysis: Analysis,
     config: &EffectiveConfig,
     selected: bool,
+    theme: Theme,
 ) -> Result<poly_crap::MergeResult> {
     let coverage = parse_coverage_files(&config.coverage)?;
     let merged = merge_for_scope(analysis, &coverage, config, selected);
-    warn_coverage_scope(&merged);
+    warn_coverage_scope(&merged, theme);
     Ok(merged)
 }
 
@@ -368,12 +393,14 @@ fn merge_for_scope(
     }
 }
 
-fn warn_coverage_scope(merged: &poly_crap::MergeResult) {
+fn warn_coverage_scope(merged: &poly_crap::MergeResult, theme: Theme) {
     if merged.diagnostics.source_only_count > 0 || merged.diagnostics.coverage_only_count > 0 {
-        eprintln!(
-            "warning: coverage scope mismatch: {} source-only file(s), {} coverage-only file(s)",
-            merged.diagnostics.source_only_count, merged.diagnostics.coverage_only_count
+        let message = format!(
+            "coverage scope mismatch: {}, {}",
+            style::count(merged.diagnostics.source_only_count, "source-only file"),
+            style::count(merged.diagnostics.coverage_only_count, "coverage-only file")
         );
+        eprintln!("{}", style::warning(theme, message));
     }
 }
 
@@ -395,6 +422,7 @@ fn render_report(
         render_delta_report(
             path,
             &cli.path,
+            presentation(config, cli.stdout_theme()),
             config,
             collected.entries,
             collected.diagnostics,
@@ -404,9 +432,19 @@ fn render_report(
     }
 }
 
+/// What the renderers read besides the rows.
+fn presentation(config: &EffectiveConfig, theme: Theme) -> Presentation {
+    Presentation {
+        threshold: config.threshold,
+        summary: config.summary,
+        theme,
+    }
+}
+
 fn render_delta_report(
     path: &std::path::Path,
     root: &std::path::Path,
+    options: Presentation,
     config: &EffectiveConfig,
     entries: Vec<Entry>,
     diagnostics: ScopeDiagnostics,
@@ -420,13 +458,7 @@ fn render_delta_report(
         report::RowFilter::explicit(config.min),
         config.top,
     );
-    let rendered = report::render_delta(
-        &delta,
-        config.format,
-        config.threshold,
-        config.summary,
-        totals,
-    )?;
+    let rendered = report::render_delta(&delta, config.format, options, totals)?;
     Ok((rendered, failed))
 }
 
@@ -452,8 +484,7 @@ fn render_absolute_report(
         shown,
         collected.diagnostics,
         config.format,
-        config.threshold,
-        config.summary,
+        presentation(config, cli.stdout_theme()),
         totals,
     )?;
     add_diff_summary(
@@ -477,9 +508,10 @@ fn add_diff_summary(
         return;
     };
     *rendered = format!(
-        "Git diff against {requested} from {}: {} changed file(s), {selected_units} selected unit(s).\n{rendered}",
+        "Git diff against {requested} from {}: {}, {} selected.\n{rendered}",
         diff.merge_base,
-        diff.files.len(),
+        style::count(diff.files.len(), "changed file"),
+        style::count(selected_units, "function"),
     );
 }
 

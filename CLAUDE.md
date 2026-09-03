@@ -48,7 +48,7 @@ merge               CodeUnit × coverage → Entry (adds coverage, score)
   ↓
 report::gate_entries    --allow only; this set decides the exit code
   ↓
-report::render_*    human, JSON, or SARIF
+report::render_*    human (laid out by table, colored by style), JSON, or SARIF
 ```
 
 Two branches hang off that spine:
@@ -70,6 +70,22 @@ gate on both `--fail-regression` and `--fail-above`; `report::DeltaTotals`
 counts both before `limit_delta` trims rows. `report::RowFilter` picks the
 rows: human output defaults to the failing ones, JSON and SARIF to every one,
 because a JSON report has to hold every entry to serve as a baseline.
+
+**Color never reaches machine formats.** `report::render_absolute` and
+`render_delta` take a `report::Presentation` whose `theme` only the human
+branch reads, so JSON and SARIF cannot pick up an escape code. `main.rs`
+resolves stdout and stderr separately (`Cli::stdout_theme`,
+`Cli::stderr_theme`), so `--format json | jq` keeps a colored stderr, and
+`auto` never colors a report written with `--output`. `table::Table` pads a
+cell before it paints it, so codes never count toward a width. Unit tests
+render with `style::Theme::plain()`, and the integration tests build every
+command through a `poly_crap()` helper that scrubs `NO_COLOR`, `CLICOLOR`,
+and `CLICOLOR_FORCE`, so a developer's shell cannot flip them.
+
+**A `match` arm costs a decision.** Five arms with no `_` score CC 6 and fail
+the repo's own gate however well they are tested. `report::status_style`
+uses a lookup array and `status_text` formats the `Debug` name for that
+reason.
 
 **`Language` is an array index.** `Language::index()` keys parallel `[_; 6]`
 consts: `NAMES` and `EXTENSIONS` in `model.rs`, `GRAMMAR_LOADERS`,

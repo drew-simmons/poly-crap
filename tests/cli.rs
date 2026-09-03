@@ -4,6 +4,16 @@ use serde_json::Value;
 use std::fs;
 use std::path::Path;
 
+/// The binary with the color environment scrubbed, so a developer's
+/// `CLICOLOR_FORCE` or `NO_COLOR` cannot change what a test sees.
+fn poly_crap() -> assert_cmd::Command {
+    let mut command = cargo_bin_cmd!("poly-crap");
+    for name in ["NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"] {
+        command.env_remove(name);
+    }
+    command
+}
+
 fn write(path: &Path, value: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).unwrap();
@@ -38,7 +48,7 @@ fn mixed_language_json_matches_schema() {
         ),
     );
 
-    let output = cargo_bin_cmd!("poly-crap")
+    let output = poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -87,11 +97,11 @@ fn threshold_gate_and_config_precedence_work() {
         &dir.path().join(".poly-crap.toml"),
         "threshold = 1000.0\nfail-above = true\n",
     );
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args(["--path", dir.path().to_str().unwrap()])
         .assert()
         .success();
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args(["--path", dir.path().to_str().unwrap(), "--threshold", "10"])
         .assert()
         .code(1);
@@ -105,11 +115,32 @@ fn syntax_error_warns_when_another_file_parses() {
         "function good() { return 1; }\n",
     );
     write(&dir.path().join("bad.js"), "function {\n");
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args(["--path", dir.path().to_str().unwrap()])
         .assert()
         .success()
         .stderr(predicate::str::contains("warning:"));
+}
+
+#[test]
+fn coverage_scope_mismatch_warns_on_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("a.py"), "def a():\n    return 0\n");
+    write(&dir.path().join("b.py"), "def b():\n    return 0\n");
+    write(
+        &dir.path().join("coverage.lcov"),
+        "SF:a.py\nDA:1,1\nDA:2,1\nend_of_record\nSF:gone.py\nDA:1,1\nend_of_record\n",
+    );
+    poly_crap()
+        .args(["--path", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "warning: coverage scope mismatch: 1 source-only file, 1 coverage-only file",
+        ))
+        .stdout(predicate::str::contains(
+            "Coverage scope: 2 analyzed files, 2 coverage source files, 1 matched, 1 source-only, 1 coverage-only.",
+        ));
 }
 
 #[test]
@@ -118,7 +149,7 @@ fn baseline_delta_matches_schema_and_can_fail() {
     let source = dir.path().join("app.py");
     let baseline = dir.path().join("baseline.json");
     write(&source, "def run(x):\n    return x\n");
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -133,7 +164,7 @@ fn baseline_delta_matches_schema_and_can_fail() {
         &source,
         "def run(x):\n    if x:\n        if x > 1:\n            return x\n    return 0\n",
     );
-    let output = cargo_bin_cmd!("poly-crap")
+    let output = poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -159,7 +190,7 @@ fn baseline_runs_honor_fail_above_for_new_functions() {
     let source = dir.path().join("app.py");
     let baseline = dir.path().join("baseline.json");
     write(&source, "def simple(x):\n    return x\n");
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -176,7 +207,7 @@ fn baseline_runs_honor_fail_above_for_new_functions() {
     );
     // `risky` is new, so it has no baseline score to rise from. Only the
     // threshold gate can fail it, and the summary has to say why.
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -187,9 +218,9 @@ fn baseline_runs_honor_fail_above_for_new_functions() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "1 of 2 function(s) exceed CRAP threshold 5.0.",
+            "1 of 2 functions exceeds CRAP threshold 5.0.",
         ));
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -199,7 +230,7 @@ fn baseline_runs_honor_fail_above_for_new_functions() {
         ])
         .assert()
         .code(1)
-        .stdout(predicate::str::contains("0 regression(s) found."));
+        .stdout(predicate::str::contains("0 regressions found."));
 }
 
 #[test]
@@ -213,7 +244,7 @@ fn config_is_found_from_a_subdirectory_with_a_relative_path() {
         &dir.path().join("sub/app.py"),
         "def risky(x):\n    if x:\n        return 1\n    return 0\n",
     );
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .current_dir(dir.path().join("sub"))
         .args(["--path", ".", "--fail-above"])
         .assert()
@@ -231,7 +262,7 @@ fn display_limits_do_not_hide_threshold_failures_from_the_gate() {
     // threshold, so it has to fail the build even when no row survives, and
     // the summary has to count both functions rather than what it printed.
     for limit in [["--min", "1000"], ["--top", "1"]] {
-        cargo_bin_cmd!("poly-crap")
+        poly_crap()
             .args([
                 "--path",
                 dir.path().to_str().unwrap(),
@@ -244,7 +275,7 @@ fn display_limits_do_not_hide_threshold_failures_from_the_gate() {
             .args(limit)
             .assert()
             .code(1)
-            .stdout(predicate::str::contains("1 of 2 function(s) exceed"));
+            .stdout(predicate::str::contains("1 of 2 functions exceeds"));
     }
 }
 
@@ -261,7 +292,7 @@ fn human_output_lists_failing_rows_unless_min_is_set() {
     );
     // `run` scores 6.0 at 50% coverage and `simple` 1.0, so the default table
     // holds one row, says what it left out, and points at the untested lines.
-    let human = cargo_bin_cmd!("poly-crap")
+    let human = poly_crap()
         .args(["--path", dir.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -269,10 +300,11 @@ fn human_output_lists_failing_rows_unless_min_is_set() {
     assert!(stdout.contains("  run  "), "{stdout}");
     assert!(!stdout.contains("  simple  "), "{stdout}");
     assert!(stdout.contains("app.py:4  6-8"), "{stdout}");
-    assert!(stdout.contains("1 more function(s) not shown"), "{stdout}");
-    assert!(stdout.contains("1 of 2 function(s) exceed"), "{stdout}");
+    assert!(stdout.contains("1 more function not shown"), "{stdout}");
+    assert!(stdout.contains("1 of 2 functions exceeds"), "{stdout}");
+    assert!(!stdout.contains("\x1b["), "{stdout}");
 
-    let all = cargo_bin_cmd!("poly-crap")
+    let all = poly_crap()
         .args(["--path", dir.path().to_str().unwrap(), "--min", "0"])
         .output()
         .unwrap();
@@ -281,12 +313,79 @@ fn human_output_lists_failing_rows_unless_min_is_set() {
     assert!(!stdout.contains("not shown"), "{stdout}");
 
     // JSON keeps every entry, or a report could not serve as a baseline.
-    let json = cargo_bin_cmd!("poly-crap")
+    let json = poly_crap()
         .args(["--path", dir.path().to_str().unwrap(), "--format", "json"])
         .output()
         .unwrap();
     let report: Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(report["entries"].as_array().unwrap().len(), 2, "{report}");
+}
+
+#[test]
+fn color_is_off_without_a_terminal_and_on_with_the_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        &dir.path().join("app.py"),
+        "def run(x):\n    if x:\n        if x > 1:\n            if x > 2:\n                return 1\n    return 0\n",
+    );
+    write(
+        &dir.path().join("coverage.lcov"),
+        "SF:app.py\nDA:1,1\nDA:2,1\nDA:3,0\nDA:4,0\nDA:5,0\nDA:6,1\nend_of_record\n",
+    );
+    let path = dir.path().to_str().unwrap();
+    // A test has no terminal, so `auto` writes plain text to both streams.
+    let auto = poly_crap().args(["--path", path]).output().unwrap();
+    assert!(!String::from_utf8_lossy(&auto.stdout).contains("\x1b["));
+    assert!(!String::from_utf8_lossy(&auto.stderr).contains("\x1b["));
+    // `always` colors the table, the summary, and the note on stderr.
+    let always = poly_crap()
+        .args(["--path", path, "--color", "always"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&always.stdout);
+    let stderr = String::from_utf8_lossy(&always.stderr);
+    assert!(stdout.starts_with("\x1b["), "{stdout}");
+    assert!(stdout.contains("CRAP threshold"), "{stdout}");
+    assert!(stderr.starts_with("\x1b["), "{stderr}");
+    assert!(stderr.contains("note:"), "{stderr}");
+    // `NO_COLOR` wins under `auto`; the explicit flag wins over `NO_COLOR`.
+    let forced = poly_crap()
+        .env("NO_COLOR", "1")
+        .args(["--path", path, "--color", "always"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&forced.stdout).contains("\x1b["));
+    let suppressed = poly_crap()
+        .env("CLICOLOR_FORCE", "1")
+        .args(["--path", path, "--color", "never"])
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&suppressed.stdout).contains("\x1b["));
+    // Machine formats never carry a code, whatever the flag says.
+    let json = poly_crap()
+        .args(["--path", path, "--color", "always", "--format", "json"])
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&json.stdout).unwrap();
+    let schema: Value = serde_json::from_str(include_str!("../schemas/report-v1.json")).unwrap();
+    assert!(
+        jsonschema::validator_for(&schema)
+            .unwrap()
+            .is_valid(&report)
+    );
+    assert!(String::from_utf8_lossy(&json.stderr).starts_with("\x1b["));
+    // A file gets codes only when asked for them outright.
+    let file = dir.path().join("report.txt");
+    for (mode, expected) in [("auto", false), ("always", true)] {
+        poly_crap()
+            .env("CLICOLOR_FORCE", "1")
+            .args(["--path", path, "--color", mode, "--output"])
+            .arg(&file)
+            .assert()
+            .success();
+        let written = fs::read_to_string(&file).unwrap();
+        assert_eq!(written.contains("\x1b["), expected, "{mode}: {written}");
+    }
 }
 
 #[test]
@@ -298,7 +397,7 @@ fn display_limits_do_not_hide_regressions_from_the_gate() {
         &source,
         "def run(x):\n    if x:\n        return 1\n    return 0\n",
     );
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -316,7 +415,7 @@ fn display_limits_do_not_hide_regressions_from_the_gate() {
     // `--min` drops the low-scoring baseline row. If that filter reaches the
     // baseline, the regressed function matches nothing and is reported as new,
     // which `--fail-regression` does not gate on.
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -338,7 +437,7 @@ fn an_edit_above_a_function_does_not_report_it_as_moved() {
     let baseline = dir.path().join("baseline.json");
     let body = "def one(x):\n    if x:\n        return 1\n    return 0\n\ndef two(x):\n    if x:\n        return 1\n    return 0\n";
     write(&source, body);
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -352,7 +451,7 @@ fn an_edit_above_a_function_does_not_report_it_as_moved() {
     // One import line pushes both functions down. Neither function changed,
     // so neither may show up as moved, new, or removed.
     write(&source, &format!("import os\n\n{body}"));
-    let output = cargo_bin_cmd!("poly-crap")
+    let output = poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -386,7 +485,7 @@ fn allow_path_globs_suppress_reported_entries() {
         &dir.path().join("app.py"),
         "def kept(x):\n    if x:\n        return 1\n    return 0\n",
     );
-    let output = cargo_bin_cmd!("poly-crap")
+    let output = poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -419,7 +518,7 @@ fn coverage_is_discovered_at_default_locations() {
         &dir.path().join("coverage/lcov.info"),
         "SF:app.py\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nend_of_record\n",
     );
-    let output = cargo_bin_cmd!("poly-crap")
+    let output = poly_crap()
         .args(["--path", dir.path().to_str().unwrap(), "--format", "json"])
         .output()
         .unwrap();
@@ -460,7 +559,7 @@ fn cobertura_report_is_discovered_and_read() {
             "</class></classes></package></packages></coverage>\n",
         ),
     );
-    let output = cargo_bin_cmd!("poly-crap")
+    let output = poly_crap()
         .args(["--path", dir.path().to_str().unwrap(), "--format", "json"])
         .output()
         .unwrap();
@@ -487,7 +586,7 @@ fn explicit_coverage_and_opt_out_disable_discovery() {
     write(&uncovered, "SF:app.py\nDA:1,0\nDA:2,0\nend_of_record\n");
 
     // --no-auto-coverage ignores the discoverable report and stays silent.
-    let output = cargo_bin_cmd!("poly-crap")
+    let output = poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -503,7 +602,7 @@ fn explicit_coverage_and_opt_out_disable_discovery() {
     assert_eq!(report["entries"][0]["coverage"], Value::Null, "{report}");
 
     // An explicit --coverage wins over the discoverable report.
-    let output = cargo_bin_cmd!("poly-crap")
+    let output = poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),
@@ -524,7 +623,7 @@ fn explicit_coverage_and_opt_out_disable_discovery() {
 fn missing_coverage_report_warns_on_stderr() {
     let dir = tempfile::tempdir().unwrap();
     write(&dir.path().join("app.py"), "def run(x):\n    return x\n");
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args(["--path", dir.path().to_str().unwrap()])
         .assert()
         .success()
@@ -547,7 +646,7 @@ fn stale_coverage_report_warns_on_stderr() {
         .unwrap();
     write(&dir.path().join("app.py"), "def run(x):\n    return x\n");
     // The report predates the source, so the run says so but still scores.
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args(["--path", dir.path().to_str().unwrap()])
         .assert()
         .success()
@@ -556,7 +655,7 @@ fn stale_coverage_report_warns_on_stderr() {
         ));
     // Rewriting the report makes it newer than the source, and the warning goes.
     write(&report, "SF:app.py\nDA:1,1\nDA:2,1\nend_of_record\n");
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args(["--path", dir.path().to_str().unwrap()])
         .assert()
         .success()
@@ -569,7 +668,7 @@ fn malformed_coverage_exits_two() {
     write(&dir.path().join("app.js"), "function run() {}\n");
     let coverage = dir.path().join("bad.txt");
     write(&coverage, "not a coverage report\n");
-    cargo_bin_cmd!("poly-crap")
+    poly_crap()
         .args([
             "--path",
             dir.path().to_str().unwrap(),

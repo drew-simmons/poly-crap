@@ -154,7 +154,7 @@ python3 "$PC" scan --coverage coverage/lcov.info --jobs 4 --top 20
 Verified gate behaviour in a repo with one over-threshold function:
 
 ```text
-1 of 1 function(s) exceed CRAP threshold 5.0.
+1 of 1 function exceeds CRAP threshold 5.0.
 
 exit 1: gate failed — a function is over the threshold, or a score regressed
 ```
@@ -313,7 +313,7 @@ The rest come from poly-crap's README and are printed as suggestions. Neither
   `note: using discovered coverage report(s)` on stderr;
   `--no-auto-coverage` turns that search off.
 - **Exit 0 does not mean clean.** Poly-crap only fails a run when you ask for a
-  gate. A scan reporting `1 of 2 function(s) exceed CRAP threshold 5.0` still
+  gate. A scan reporting `1 of 2 functions exceeds CRAP threshold 5.0` still
   exits 0 without `--gate`; `scan` appends `(no gate requested — add --gate to
   fail on violations)` to keep that honest.
 - **Warnings go to stderr and will corrupt piped JSON.** `poly-crap --format
@@ -321,7 +321,7 @@ The rest come from poly-crap's README and are printed as suggestions. Neither
   scope mismatch fires. Use `2>/dev/null`. The script keeps the streams apart.
 - **SARIF carries only threshold violations; JSON carries every function.** An
   empty SARIF `results` array does not mean the scan found nothing. Newer
-  binaries print the same subset in human output, with a `N more function(s)
+  binaries print the same subset in human output, with an `N more functions
   not shown` line under the table; `--min 0` lists every function, and the last
   column names the uncovered line ranges.
 - **`tests/`, `node_modules/`, and `*_test.go` are excluded by default**, along
@@ -354,7 +354,7 @@ subcommand elsewhere. Use `check`, `scan`, or `baseline`.
 **Everything reports `N/A` coverage and huge scores** — the report was not
 found or its paths do not line up. Run `check`, then pass `--coverage`
 explicitly. Poly-crap matches absolute paths first, then the longest unique
-path suffix, and warns `coverage scope mismatch: N source-only file(s)` on
+path suffix, and warns `coverage scope mismatch: N source-only files` on
 stderr when the scopes disagree.
 
 **`jq: parse error: Invalid numeric literal at line 1, column 8`** — you merged

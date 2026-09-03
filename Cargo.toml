@@ -17,6 +17,8 @@ categories = ["command-line-utilities", "development-tools::testing"]
 dist = true
 
 [dependencies]
+anstream = "1"
+anstyle = "1"
 anyhow = "1"
 clap = { version = "4.6.6", features = ["derive"] }
 globset = "0.4"

@@ -15,6 +15,8 @@
 //! 5. [`report::gate_entries`] builds the set the exit code is decided on, the
 //!    `render_*` functions in [`report`] write human, JSON, or SARIF output,
 //!    and [`baseline::compare`] diffs a run against an earlier JSON report.
+//!    Human output is laid out by [`table`] and colored through a
+//!    [`style::Theme`]; the machine formats never see one.
 //!
 //! ```rust,no_run
 //! use poly_crap::config::{Config, EffectiveConfig, Overrides};
@@ -47,6 +49,8 @@ pub mod merge;
 pub mod model;
 pub mod report;
 pub mod score;
+pub mod style;
+pub mod table;
 
 pub use analysis::{Analysis, analyze_paths, analyze_tree};
 pub use coverage::{CoverageMap, discover_reports, parse_coverage_files};
