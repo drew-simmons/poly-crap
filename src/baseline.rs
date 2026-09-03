@@ -105,6 +105,14 @@ fn match_exact(
     (entries, matched)
 }
 
+/// Match the rest by language, symbol, and path, ignoring position.
+///
+/// An edit above a function moves its start line, and a baseline written from
+/// another root spells its path differently, so neither belongs in this key.
+/// Keying on the line here would report every function below an added import
+/// as `moved`. The paths still have to agree on the file name and its
+/// directory, and exactly one baseline entry has to fit best, or the function
+/// stays `new` for [`match_moves`] to consider.
 fn match_suffixes(
     entries: &mut [DeltaEntry],
     baseline: &[Entry],
@@ -122,7 +130,6 @@ fn match_suffixes(
                 !matched.contains(index)
                     && candidate.language == delta.current.language
                     && candidate.symbol == delta.current.symbol
-                    && candidate.start_line == delta.current.start_line
             })
             .map(|(index, candidate)| {
                 (
@@ -348,5 +355,69 @@ mod tests {
             report.entries[0].previous_file,
             Some(PathBuf::from("old/a.rs"))
         );
+    }
+
+    fn shifted(file: &str, score: f64, start_line: usize) -> Entry {
+        let mut entry = entry(Language::Rust, file, "run", score);
+        entry.start_line = start_line;
+        entry.end_line = start_line + 1;
+        entry
+    }
+
+    #[test]
+    fn a_line_shift_in_the_same_file_is_not_a_move() {
+        // An edit above the function moves its start line and nothing else.
+        let baseline = vec![entry(Language::Rust, "src/a.rs", "run", 2.0)];
+        let report = compare(
+            vec![shifted("src/a.rs", 2.0, 5)],
+            &baseline,
+            DEFAULT_EPSILON,
+            diagnostics(),
+        );
+        assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
+        assert_eq!(report.entries[0].previous_file, None);
+        assert!(report.removed.is_empty());
+
+        // The match still carries the score, so a real change still shows.
+        let report = compare(
+            vec![shifted("src/a.rs", 6.0, 5)],
+            &baseline,
+            DEFAULT_EPSILON,
+            diagnostics(),
+        );
+        assert_eq!(report.entries[0].status, DeltaStatus::Regressed);
+        assert_eq!(report.entries[0].baseline_score, Some(2.0));
+    }
+
+    #[test]
+    fn a_baseline_from_another_root_matches_across_a_line_shift() {
+        let baseline = vec![entry(Language::Rust, "/repo/src/a.rs", "run", 2.0)];
+        let report = compare(
+            vec![shifted("./src/a.rs", 2.0, 9)],
+            &baseline,
+            DEFAULT_EPSILON,
+            diagnostics(),
+        );
+        assert_eq!(report.entries[0].status, DeltaStatus::Unchanged);
+    }
+
+    #[test]
+    fn two_shifted_namesakes_in_one_file_stay_unmatched() {
+        // Rust modules can put two `run`s in one file. When both shift, neither
+        // baseline entry is the obvious partner, so neither is guessed at.
+        let baseline = vec![shifted("src/a.rs", 2.0, 1), shifted("src/a.rs", 2.0, 10)];
+        let report = compare(
+            vec![shifted("src/a.rs", 2.0, 3), shifted("src/a.rs", 2.0, 12)],
+            &baseline,
+            DEFAULT_EPSILON,
+            diagnostics(),
+        );
+        assert!(
+            report
+                .entries
+                .iter()
+                .all(|entry| entry.status == DeltaStatus::New)
+        );
+        assert_eq!(report.removed.len(), 2);
     }
 }
