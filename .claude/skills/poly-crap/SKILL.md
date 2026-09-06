@@ -59,7 +59,7 @@ already serves `schemas/report-v1.json`:
 ```sh
 mkdir -p ~/.claude/skills/poly-crap/scripts
 base=https://raw.githubusercontent.com/drew-simmons/poly-crap/main/.claude/skills/poly-crap
-curl -fsSL "$base/poly_crap.py" -o ~/.claude/skills/poly-crap/scripts/poly_crap.py
+curl -fsSL "$base/scripts/poly_crap.py" -o ~/.claude/skills/poly-crap/scripts/poly_crap.py
 curl -fsSL "$base/SKILL.md"     -o ~/.claude/skills/poly-crap/SKILL.md
 ```
 
