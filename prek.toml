@@ -8,7 +8,8 @@ hooks = [
   { id = "check-merge-conflict" },
   { id = "check-symlinks" },
   { id = "check-toml" },
-  { id = "check-yaml" },
+  # pnpm writes the lockfile as more than one YAML document.
+  { id = "check-yaml", exclude = '^docs/pnpm-lock\.yaml$' },
   { id = "detect-private-key" },
   { id = "end-of-file-fixer" },
   { id = "mixed-line-ending", args = ["--fix=lf"] },
