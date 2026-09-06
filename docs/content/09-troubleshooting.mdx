@@ -1,0 +1,54 @@
+---
+title: Troubleshooting
+description: What each warning and surprise means, and what to do about it.
+---
+
+## Every function shows `N/A` coverage and a high score
+
+No report matched. Check stderr: `warning: no coverage report found` means
+none was found, so pass `--coverage`; `coverage scope mismatch` means one was
+found but its paths do not line up with the source. Compare a path in the
+report with the path poly-crap prints, and see
+[Merging and matching paths](/coverage/matching-paths). For TypeScript, make
+sure the report names `.ts` files, not compiled `.js`.
+
+## The scores look wrong after a refactor
+
+The report is stale. Poly-crap scores today's source against whatever report
+it finds, and warns `is older than the source it covers` when the file dates
+say so. Regenerate the report.
+
+## `none of the N candidate source files parsed successfully`
+
+Every file of a language failed to parse, which usually means the files are
+not what their extension says, or use syntax the grammar does not know. A
+single unparseable file only warns.
+
+## `invalid Git diff base 'main'`
+
+The revision does not exist locally. In CI, check out with full history and
+name the remote branch, as in
+[GitHub Actions](/gating/ci-recipes#github-actions). Locally,
+`git fetch origin main` and use `origin/main`.
+
+## `--diff-base` reports functions I did not touch
+
+Their line range meets a changed line, which includes a comment or a blank
+line inside the function. The score is for the whole function, so the report
+is telling you what you now own.
+
+## `jq` fails on the JSON
+
+Warnings went to the same stream. Do not merge stderr into stdout, or write
+the report with `--output`.
+
+## A function I allowed still fails the gate
+
+Java symbols carry parameter types and Rust symbols use `::`, so
+`--allow 'D.risky'` matches nothing where `--allow 'D.risky(*'` does. Symbol
+patterns are case sensitive.
+
+## The table is empty but the summary says functions exceed the threshold
+
+`--top` or `--min` hid the rows; the summary counts every function. Drop the
+limit, or pass `--min 0`.

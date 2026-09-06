@@ -1,0 +1,54 @@
+---
+title: Quick start
+description: Score a repository in four steps, from a coverage report to a gated branch.
+---
+
+<Steps>
+  <Step title="Run your tests with coverage on">
+    Poly-crap reads the report; it never runs tests itself.
+    [Coverage reports](/coverage) lists the command for each stack.
+  </Step>
+  <Step title="Run poly-crap from the repository root">
+    It finds a report at any of the
+    [default locations](/coverage/auto-discovery) on its own:
+
+    ```sh
+    poly-crap
+    ```
+  </Step>
+  <Step title="Read the table">
+    Each row is a function over the threshold, and the last column names the
+    lines a test never reached:
+
+    ```text
+    CRAP results
+      CRAP   CC  Coverage  Language  Symbol  Location    Uncovered
+       6.0  4.0     50.0%  python    run     ./app.py:4  6-8
+      1 more function not shown; adjust --min or --top to list them.
+    1 of 2 functions exceeds CRAP threshold 5.0.
+    Coverage scope: 1 analyzed file, 1 coverage source file, 1 matched, 0 source-only, 0 coverage-only.
+    ```
+
+    On a terminal, the score and coverage cells are colored by how bad they
+    are, and the summary line is red while a function is over the threshold.
+  </Step>
+  <Step title="Gate a branch">
+    This scores only the functions the branch changed and exits `1` when one
+    is over the threshold:
+
+    ```sh
+    poly-crap --diff-base main --fail-above
+    ```
+  </Step>
+</Steps>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="How the score works" href="/how-the-score-works" icon="calculator">
+    The CRAP formula and how to choose a threshold.
+  </Card>
+  <Card title="Reading the output" href="/output" icon="table">
+    Every column, the summary lines, and the machine formats.
+  </Card>
+</CardGroup>

@@ -193,3 +193,8 @@ debug/
 # coverage reports the dogfood command writes into the tree
 /lcov.info
 /coverage.lcov
+
+# Blume docs site
+node_modules/
+.blume/
+.blume-verify/

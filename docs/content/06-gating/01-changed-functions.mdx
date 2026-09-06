@@ -1,0 +1,28 @@
+---
+title: Changed functions
+description: Score only the functions a branch touched and fail the build when one is over the threshold.
+---
+
+Name the base revision of a branch, and poly-crap scores only the functions
+the branch touched:
+
+```sh
+poly-crap --diff-base main --fail-above
+```
+
+It finds the merge base of the revision and `HEAD`, then takes committed
+changes, staged and unstaged edits, and untracked files that `.gitignore` does
+not cover. A function is selected when its current line range meets an added
+or changed line. Its score still comes from the whole function and its current
+coverage, so an edit to one line of an untested twenty-branch function fails
+the gate. That is the point: the function is now yours.
+
+Renamed files are followed. Deleted functions and binary files are ignored.
+Git must be installed, `--path` must be inside a Git repository, and the
+revision must resolve to a commit. In a pull request checkout the branch you
+want is usually `origin/main`; see
+[GitHub Actions](/gating/ci-recipes#github-actions).
+
+:::note
+`--diff-base` cannot be combined with `--baseline`.
+:::

@@ -1,0 +1,52 @@
+---
+title: How the score works
+description: The CRAP formula, what follows from it, and how to choose a threshold for your code.
+---
+
+Poly-crap uses the Change Risk Anti-Patterns metric:
+
+```text
+CRAP(m) = complexity(m)² × (1 - coverage(m) / 100)³ + complexity(m)
+```
+
+`complexity` is the function's cyclomatic complexity: one, plus one for each
+decision point. [Complexity rules](/scope/complexity-rules) lists what counts.
+`coverage` is the share of the function's executable lines that a test ran.
+
+Two things follow from the formula:
+
+- At 100% coverage the score equals the complexity. Coverage can only remove
+  the first term, never the second, so a threshold also caps complexity.
+- The coverage term is cubed. Half coverage leaves an eighth of the penalty;
+  80% coverage leaves under 1%. The first tests on a function pay off the most.
+
+| Complexity | 0% | 50% | 80% | 100% |
+| --- | --- | --- | --- | --- |
+| 1 | 2.0 | 1.1 | 1.0 | 1.0 |
+| 2 | 6.0 | 2.5 | 2.0 | 2.0 |
+| 4 | 20.0 | 6.0 | 4.1 | 4.0 |
+| 6 | 42.0 | 10.5 | 6.3 | 6.0 |
+| 10 | 110.0 | 22.5 | 10.8 | 10.0 |
+
+## Choosing a threshold
+
+The default threshold is `5`. Under it, a function may have at most five
+decision points however well it is tested, a function with four needs more
+than 60% coverage, and a function with two needs about 10%. Poly-crap's own
+repository holds itself to that number. It suits a small, well-tested codebase
+that wants to stay that way.
+
+The threshold the metric's authors proposed is `30`. It tolerates a
+complexity of 30 when fully covered, or a complexity of 5 with no coverage at
+all. It suits an existing codebase that wants to catch the worst offenders
+first.
+
+To pick one for your code:
+
+1. Run once with `--min 0` to see every score, or `--top 20` for the worst.
+2. Put a `threshold` you can meet today in
+   [`.poly-crap.toml`](/reference/configuration-file), and lower it as the
+   code improves.
+3. Gate pull requests with `--diff-base` in the meantime, so new code meets the
+   bar even where old code does not. A [baseline](/gating/baselines) does the
+   same for the whole repository.

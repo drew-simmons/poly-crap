@@ -1,0 +1,14 @@
+---
+title: Exit codes
+description: What exit codes 0, 1, and 2 mean, and when a parse failure fails the run.
+---
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The scan completed and no requested gate failed. |
+| `1` | `--fail-above` or `--fail-regression` failed. |
+| `2` | Usage, input, parsing, coverage, or output failed. |
+
+Without a gate flag, poly-crap always exits `0`, however bad the scores. A
+source file with a syntax error produces a warning and is skipped; the run
+fails only when candidate files exist and none of them parse.

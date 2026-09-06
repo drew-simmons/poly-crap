@@ -1,0 +1,42 @@
+---
+title: Merging and matching paths
+description: How poly-crap merges several reports, lines up report entries with source files, and treats functions no report covers.
+---
+
+## Merging reports
+
+Pass `--coverage` more than once to merge reports, for example one per
+language. Where two reports cover the same line, a hit in either counts.
+
+## Matching paths
+
+Coverage tools write paths relative to their own roots, so poly-crap matches a
+source file to a report entry in three steps:
+
+1. The same path, as written.
+2. The same file after resolving symlinks, when both paths are absolute.
+3. The longest path suffix shared with exactly one report entry. A suffix must
+   cover at least the file name and its directory, unless the report names the
+   file with no directory at all, as `SF:app.py` does. Without that rule a
+   file the tests never ran, such as `pkg_a/util.py`, could borrow the coverage
+   of `pkg_b/util.py`.
+
+A suffix shared by two report entries matches neither. Poly-crap warns on
+stderr when source files and report entries do not line up, and the
+`Coverage scope` line at the end of the report counts both sides.
+
+Poly-crap does not read JavaScript source maps. For TypeScript, the coverage
+tool must report the original `.ts` paths, which c8 and Vitest do by default.
+
+## Functions without coverage
+
+A function has no coverage when its file is not in any report, or when the
+report has no executable lines inside the function. `--missing` decides what
+happens:
+
+- `pessimistic`, the default, scores it as 0% covered.
+- `optimistic` scores it as 100% covered.
+- `skip` leaves it out of the report and the gates.
+
+In every case the function's `coverage` is `null` in JSON and `N/A` in the
+table, so you can tell a measured 0% from a missing one.

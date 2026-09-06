@@ -1,0 +1,47 @@
+---
+title: Baselines
+description: Save a JSON report on the main branch and fail the build when any score gets worse.
+---
+
+For an existing codebase, save a JSON report on the main branch:
+
+```sh
+poly-crap --format json --output poly-crap.json
+```
+
+Then compare a change against it:
+
+```sh
+poly-crap --baseline poly-crap.json --fail-regression --fail-above
+```
+
+Each current function is matched to the baseline by file, name, and position,
+with allowances for a baseline written from a different root. Every function
+gets one status:
+
+- `regressed`: the score rose by more than `--epsilon`, default `0.01`.
+- `improved`: the score fell by more than `--epsilon`.
+- `unchanged`: neither. The table hides these rows; JSON keeps them.
+- `new`: nothing in the baseline matched.
+- `moved`: the same function, found in another file.
+- `removed`: a baseline function nothing matched.
+
+```text
+Changes since baseline
+  Status     Score  Delta  Language  Symbol  Location    Uncovered
+  regressed    6.0  +5.00  python    run     ./app.py:4  6-8
+  new          1.0    N/A  python    helper  ./app.py:9
+1 regression found.
+1 of 3 functions exceeds CRAP threshold 5.0.
+```
+
+:::tip
+`--fail-regression` fails the run on any `regressed` function. It says nothing
+about a `new` one, because there is no earlier score to rise from, so pair it
+with `--fail-above` to hold new functions to the threshold.
+:::
+
+A baseline written by an older poly-crap may not parse; regenerate it.
+
+`--allow` applies to the baseline too, so an allowed function never appears as
+`removed`.

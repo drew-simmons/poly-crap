@@ -1,0 +1,20 @@
+---
+title: Complexity rules
+description: What adds a decision point to a function's cyclomatic complexity, and what does not.
+---
+
+Every function starts at `1`. Each of these adds one:
+
+- `if`, `elif`, and `else if`, and Rust's `let … else`.
+- A ternary or conditional expression.
+- Each loop: `for`, `while`, `do`, and Rust's `loop`.
+- Each `case` of a `switch`, arm of a `match`, or case of a Go `select`.
+  Default arms add nothing: `default`, Rust's `_ =>`, and Python's `case _:`.
+  A guarded `case _ if x:` still counts, and so does its guard.
+- Each `catch` or `except` clause.
+- Each `&&`, `||`, `and`, and `or`, including the `&&` of a Rust `if let`
+  chain.
+- Each `for` and `if` clause in a Python comprehension.
+
+These add nothing: `??` and `?.`, Rust's `?`, `finally`, early returns, and a
+nested function, which is scored on its own.

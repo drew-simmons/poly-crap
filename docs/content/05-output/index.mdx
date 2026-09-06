@@ -1,0 +1,66 @@
+---
+title: Reading the output
+description: How to read the table, the summary lines, and the colors poly-crap prints on a terminal.
+---
+
+A run prints the functions over the threshold, then the summary lines:
+
+```text
+CRAP results
+  CRAP   CC  Coverage  Language  Symbol  Location    Uncovered
+   6.0  4.0     50.0%  python    run     ./app.py:4  6-8
+  1 more function not shown; adjust --min or --top to list them.
+1 of 2 functions exceeds CRAP threshold 5.0.
+Coverage scope: 1 analyzed file, 1 coverage source file, 1 matched, 0 source-only, 0 coverage-only.
+```
+
+- **CRAP** is the score.
+- **CC** is the cyclomatic complexity.
+- **Coverage** is the share of the function's executable lines that a test
+  ran, or `N/A` when no report covers the function.
+- **Symbol** is the qualified name: `Class.method`, `Type::method` or
+  `module::function` in Rust, `Type.Method` for a Go method,
+  `Class.method(int,String)` in Java, and `outer.inner` for a nested function.
+  A JavaScript class expression takes the name of the variable it is assigned
+  to.
+- **Location** is the file and the line the function starts on.
+- **Uncovered** lists the line ranges inside the function that no test ran, up
+  to six, then a count of the rest.
+
+The table holds the functions over the threshold, sorted by score, with every
+column padded to line up. The line under it says how many rows it left out,
+and a run with nothing over the threshold prints that line with no table.
+`--min <SCORE>` sets a different floor, so `--min 0` lists every function;
+`--top <N>` caps the rows; `--sort file` groups rows by file. None of them
+change the summary line or the exit code. `--summary` prints the summary
+lines with no table.
+
+With `--diff-base`, a first line names the merge base and counts the changed
+files and the functions selected from them:
+
+```text
+Git diff against main from 3f2a9c1: 2 changed files, 1 function selected.
+```
+
+## Color
+
+On a terminal, poly-crap colors the cells that carry a judgement and leaves
+the rest plain:
+
+- A score is red over the threshold, yellow within 20% of it, and green
+  below that.
+- Coverage is green from 80%, yellow from 50%, and red below that or when it
+  is `N/A`.
+- In a baseline comparison, `regressed` is red, `improved` green, `new` cyan,
+  `moved` magenta, and `removed` dim. A positive delta is red and a negative
+  one green.
+- The threshold and regression summary lines are red when anything failed and
+  green otherwise. Lines that only give context are dim.
+- On stderr, the `warning:`, `note:`, and `error:` prefixes are colored.
+
+`--color auto`, the default, colors a stream when it is a terminal that
+supports color, never when `NO_COLOR` is set, and always when
+`CLICOLOR_FORCE` is. `--color always` and `--color never` decide outright.
+Stdout and stderr are judged on their own, so `poly-crap --format json | jq`
+keeps its colored warnings. JSON and SARIF never contain an escape code, and a
+report written with `--output` gets them only under `--color always`.

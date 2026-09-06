@@ -1,0 +1,32 @@
+---
+title: Auto-discovery
+description: Where poly-crap looks for a coverage report when none is named, and what happens when it finds none.
+---
+
+When neither the command line nor `.poly-crap.toml` names a report, poly-crap
+looks under `--path` for the files coverage tools write by default, in this
+order:
+
+```text
+coverage.lcov
+lcov.info
+coverage/lcov.info
+coverage/coverage.lcov
+coverage.out
+coverage.xml
+coverage/cobertura-coverage.xml
+target/site/jacoco/jacoco.xml
+build/reports/jacoco/test/jacocoTestReport.xml
+```
+
+It uses every report it finds and names them on stderr. When it finds none, it
+warns that every function will follow the
+[`--missing` policy](/coverage/matching-paths#functions-without-coverage),
+which by default scores it as 0% covered. Pass `--no-auto-coverage` to skip
+the search.
+
+:::warning[Stale reports]
+A report left over from last week scores today's code. Poly-crap warns on
+stderr when a report is older than a source file it covers, but it still
+scores the run. Regenerate the report before you scan.
+:::
