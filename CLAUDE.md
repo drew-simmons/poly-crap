@@ -15,6 +15,17 @@ cargo package --locked --allow-dirty
 `uvx prek run -a` runs the same three Rust checks plus the file hygiene hooks,
 and is what CI runs.
 
+The docs site in `docs/` is a [Blume](https://useblume.dev) project. Behavior
+docs live in `docs/content/`; the README is a landing page that links to
+them. The `Docs` workflow builds and validates the site on pull requests and
+deploys `main` to GitHub Pages:
+
+```sh
+pnpm --dir docs install
+pnpm --dir docs run build
+pnpm --dir docs run validate
+```
+
 Run one test by name:
 
 ```sh

@@ -52,8 +52,9 @@ pub const DEFAULT_EXCLUDES: &[&str] = &[
 ];
 
 /// The contents of `.poly-crap.toml`. Every key is optional, and an unknown
-/// key is an error so a typo cannot silently do nothing. The README's options
-/// reference gives each key's meaning.
+/// key is an error so a typo cannot silently do nothing. The options reference
+/// at <https://drew-simmons.github.io/poly-crap/reference/options> gives each
+/// key's meaning.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
