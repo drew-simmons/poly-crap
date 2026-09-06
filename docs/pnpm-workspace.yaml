@@ -1,0 +1,6 @@
+allowBuilds:
+  '@scarf/scarf': false
+  esbuild: true
+minimumReleaseAgeExclude:
+  - blume@1.6.3
+  - katex@0.18.6

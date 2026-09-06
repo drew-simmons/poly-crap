@@ -8,10 +8,12 @@ description = "Find risky, untested complexity across polyglot codebases"
 authors = ["Drew Simmons \u003cdsimmo14@gmail.com\u003e"]
 license = "MIT"
 repository = "https://github.com/drew-simmons/poly-crap"
-homepage = "https://github.com/drew-simmons/poly-crap"
+homepage = "https://drew-simmons.github.io/poly-crap/"
+documentation = "https://drew-simmons.github.io/poly-crap/"
 readme = "README.md"
 keywords = ["coverage", "complexity", "code-quality", "metrics", "cli"]
 categories = ["command-line-utilities", "development-tools::testing"]
+exclude = ["/docs", "/.github"]
 
 [package.metadata.dist]
 dist = true

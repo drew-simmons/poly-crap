@@ -1,0 +1,48 @@
+---
+title: Install
+description: Get the poly-crap binary with the installer, from crates.io, or from a source build.
+---
+
+## Installer (macOS and Linux)
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/drew-simmons/poly-crap/releases/latest/download/poly-crap-installer.sh \
+  | sh
+```
+
+:::note
+The installer downloads a prebuilt release, checks its SHA-256 checksum, and
+puts `poly-crap` in `~/.cargo/bin`. Archives and checksums are also on
+[GitHub Releases](https://github.com/drew-simmons/poly-crap/releases). To pin
+a version, replace `latest/download` with `download/v0.8.0`.
+:::
+
+## Cargo
+
+The crate is on [crates.io](https://crates.io/crates/poly-crap). With Rust
+1.88 or newer:
+
+```sh
+cargo install poly-crap --locked
+```
+
+## Build from source
+
+Building from source requires Rust 1.88 or newer:
+
+```sh
+git clone https://github.com/drew-simmons/poly-crap.git
+cd poly-crap
+cargo install --path . --locked
+```
+
+## Release targets
+
+| Platform | Architectures |
+| --- | --- |
+| macOS | Apple Silicon (`aarch64`), Intel (`x86_64`) |
+| Linux with glibc | `aarch64`, `x86_64` |
+| Linux with musl/Alpine | `x86_64` |
+
+There is no Windows build, and Windows is not tested.

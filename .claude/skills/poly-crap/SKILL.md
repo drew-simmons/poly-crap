@@ -279,10 +279,10 @@ Poly-crap reads reports; it never runs your tests. Without one, every function
 counts as 0% covered and the scores are meaningless. Both the script and newer
 binaries look for reports on their own — at the locations in the Report column
 below, plus `lcov.info` and `coverage/coverage.lcov` (`COVERAGE_CANDIDATES` in
-the script, `DEFAULT_REPORT_LOCATIONS` in `src/coverage.rs`). The README's
-"Coverage reports" section is the reference for these commands and for how
-report paths are matched to source; `check` prints the right one for your
-stack:
+the script, `DEFAULT_REPORT_LOCATIONS` in `src/coverage.rs`). The docs site's
+[Coverage reports](https://drew-simmons.github.io/poly-crap/coverage) pages
+are the reference for these commands and for how report paths are matched to
+source; `check` prints the right one for your stack:
 
 | Marker | Stack | Command | Report |
 | --- | --- | --- | --- |
@@ -300,7 +300,7 @@ Only the Rust one was executed while writing this skill:
 cargo llvm-cov --locked --lcov --output-path coverage.lcov
 ```
 
-The rest come from poly-crap's README and are printed as suggestions. Neither
+The rest come from poly-crap's docs and are printed as suggestions. Neither
 `scan` nor `check` runs your test suite.
 
 ## Gotchas

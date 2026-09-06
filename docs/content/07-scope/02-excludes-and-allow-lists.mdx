@@ -1,0 +1,32 @@
+---
+title: Excluded paths and allow lists
+description: Leave files out before parsing with excludes, or functions out after scoring with allow lists.
+---
+
+## Excluded paths
+
+The scanner respects `.gitignore`, skips hidden directories, and by default
+skips the directories `node_modules`, `target`, `vendor`, `.terraform`,
+`dist`, `build`, `tests`, `test`, `__tests__`, `src/test`, `benches`, and
+`examples` at any depth, plus the test files `*_test.go`, `*.test.*`,
+`*.spec.*`, `test_*.py`, and `*_test.py`.
+
+`--exclude <GLOB>` adds a pattern; the configuration key `default-excludes`
+replaces the built-in list; `--no-default-excludes` drops it. Globs match
+paths relative to `--path`, and `*` does not cross a directory separator, so
+write `src/generated/**` rather than `src/generated/*`. An excluded file is
+never parsed and never counted.
+
+## Allow lists
+
+`--allow <GLOB>` suppresses functions after scoring, so they leave the table,
+the gates, and the summary counts. A pattern with a `/` or `**` matches file
+paths, relative to `--path` or as reported. Any other pattern matches the
+qualified symbol, and `*` crosses `.` and `::`:
+
+```sh
+poly-crap --allow 'legacy::*' --allow 'vendor/**'
+```
+
+Java symbols carry their parameter types, so match them with a glob:
+`'Parser.parse(*'`. Matching is case sensitive.

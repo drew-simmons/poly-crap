@@ -1,0 +1,67 @@
+---
+title: Coverage reports
+description: The four report formats poly-crap reads and the command that produces one for each stack.
+---
+
+Poly-crap reads the report your test runner writes; it never runs tests
+itself. It reads four formats and detects each from its contents:
+
+- LCOV, from `cargo llvm-cov`, c8, Istanbul, coverage.py, and most others.
+- Cobertura XML, from `coverage xml`, pytest-cov, Jest's `cobertura` reporter,
+  and .NET coverlet.
+- JaCoCo XML, from the Maven and Gradle plug-ins.
+- Go cover profiles, from `go test -coverprofile`.
+
+LCOV, Cobertura, and JaCoCo give line coverage. Go profiles give statement
+coverage, weighted by statement count. [JSON output](/output/machine-formats)
+records which basis each function used.
+
+## Producing a report
+
+<Tabs>
+  <Tab title="Rust">
+    ```sh
+    cargo llvm-cov --lcov --output-path coverage.lcov
+    ```
+  </Tab>
+  <Tab title="TypeScript or JavaScript">
+    With c8:
+
+    ```sh
+    npx c8 --reporter=lcov npm test
+    ```
+  </Tab>
+  <Tab title="Python">
+    Either output format works:
+
+    ```sh
+    coverage run -m pytest
+    coverage lcov -o coverage.lcov
+    ```
+
+    ```sh
+    pytest --cov --cov-report=xml
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```sh
+    go test -coverprofile=coverage.out ./...
+    ```
+  </Tab>
+  <Tab title="Java">
+    With Maven:
+
+    ```sh
+    mvn verify
+    ```
+
+    With Gradle:
+
+    ```sh
+    gradle test jacocoTestReport
+    ```
+  </Tab>
+</Tabs>
+
+Every one of these writes to a location poly-crap
+[searches on its own](/coverage/auto-discovery).

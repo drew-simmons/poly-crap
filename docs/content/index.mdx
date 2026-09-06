@@ -1,0 +1,41 @@
+---
+title: Introduction
+description: Poly-crap finds the functions in a codebase that are both complex and poorly tested.
+---
+
+Poly-crap finds the functions in a codebase that are both complex and poorly
+tested. It parses your source with tree-sitter, reads the coverage report your
+test runner already writes, and scores every function with the CRAP metric.
+It supports TypeScript, JavaScript, Python, Go, Rust, and Java, and it ships
+as one binary with no runtime dependencies.
+
+## Three ways to use it
+
+<CardGroup cols={3}>
+  <Card title="Gate a pull request" href="/gating/changed-functions" icon="git-pull-request">
+    Fail the build when a changed function is too complex for its tests.
+  </Card>
+  <Card title="Hold a baseline" href="/gating/baselines" icon="trending-up">
+    Fail the build when any score gets worse.
+  </Card>
+  <Card title="Scan a repository" href="/quickstart" icon="search">
+    Find the functions most worth testing or splitting next.
+  </Card>
+</CardGroup>
+
+## Where to start
+
+<CardGroup cols={2}>
+  <Card title="Install" href="/install" icon="download">
+    A prebuilt binary for macOS and Linux, or a Cargo build.
+  </Card>
+  <Card title="Coverage reports" href="/coverage" icon="file-text">
+    The formats poly-crap reads and how to produce one for each stack.
+  </Card>
+  <Card title="Options" href="/reference/options" icon="settings">
+    Every flag and its key in `.poly-crap.toml`.
+  </Card>
+  <Card title="Troubleshooting" href="/troubleshooting" icon="wrench">
+    What each warning means and what to do about it.
+  </Card>
+</CardGroup>

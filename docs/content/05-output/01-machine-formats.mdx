@@ -1,0 +1,28 @@
+---
+title: JSON and SARIF
+description: Machine-readable reports for baselines, scripts, and GitHub code scanning.
+---
+
+## JSON
+
+`--format json` writes every function, not just the failures, so a report can
+serve as a [baseline](/gating/baselines). Each entry carries the fields the
+table shows plus `end_line`, `coverage_basis` (`line`, `statement`, or
+`null`), and `uncovered` as a list of `{start, end}` ranges. A `diagnostics`
+object counts files and lists up to twenty warnings. The document names its
+schema,
+[report-v1.json](https://github.com/drew-simmons/poly-crap/blob/main/schemas/report-v1.json),
+and a baseline comparison uses
+[delta-v1.json](https://github.com/drew-simmons/poly-crap/blob/main/schemas/delta-v1.json).
+
+:::warning
+Warnings go to stderr, so `poly-crap --format json | jq` stays clean. Merging
+the streams with `2>&1` breaks the JSON.
+:::
+
+## SARIF
+
+`--format sarif` writes SARIF 2.1.0 with one result per function over the
+threshold, under the rule `poly-crap/crap-threshold`, for GitHub code scanning
+and editors that read SARIF. It cannot be combined with `--baseline`.
+[CI recipes](/gating/ci-recipes#github-actions) shows how to upload it.

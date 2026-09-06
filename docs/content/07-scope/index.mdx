@@ -1,0 +1,36 @@
+---
+title: What gets scored
+description: The six languages poly-crap parses and which functions, methods, and callables get a score.
+---
+
+## Languages
+
+| Language | Extensions | `--language` |
+| --- | --- | --- |
+| JavaScript | `.js` `.jsx` `.mjs` `.cjs` | `javascript`, `js` |
+| TypeScript | `.ts` `.tsx` `.mts` `.cts` | `typescript`, `ts` |
+| Python | `.py` | `python`, `py` |
+| Go | `.go` | `go` |
+| Rust | `.rs` | `rust` |
+| Java | `.java` | `java` |
+
+All six are scanned by default. Repeat `--language` to narrow a run. The
+configuration file takes the long names only.
+
+## Functions
+
+Poly-crap scores every named function, method, and constructor, and every
+function value assigned to a name: a JavaScript arrow function in a `const`,
+a Python `lambda`, a Go `func` literal, a Rust closure in a `let`, or a Java
+lambda in a local variable. Each is scored on its own; an inner function never
+adds to its parent's complexity.
+
+Anonymous callbacks, such as the argument to `.map()` or an `export default
+function () {}`, get no score. In callback-heavy code, such as React
+components or Express handlers, that leaves real complexity unscored; name the
+callback to score it.
+
+Test code is left out. Rust items under `#[cfg(test)]` or `#[test]` are
+skipped, and the other languages keep tests in files that the
+[default excludes](/scope/excludes-and-allow-lists#excluded-paths) drop. Java
+methods with no body, such as interface signatures, are skipped as well.

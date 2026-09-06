@@ -1,0 +1,23 @@
+---
+title: Configuration file
+description: Where poly-crap finds .poly-crap.toml, how it merges with the command line, and an example.
+---
+
+Poly-crap looks for `.poly-crap.toml` in `--path`, then in each parent
+directory, and uses the first one it finds. Unknown keys are an error, so a
+typo cannot silently do nothing.
+
+The command line wins over the file, and the file over the defaults, except
+that `exclude` and `allow` lists are joined and a boolean is on when either
+side sets it. [Options](/reference/options) names the key for each flag.
+
+```toml .poly-crap.toml
+languages = ["rust", "typescript", "python"]
+threshold = 30.0
+missing = "pessimistic"
+fail-above = true
+exclude = ["src/generated/**"]
+allow = ["legacy::*", "vendor/**"]
+sort = "file"
+jobs = 4
+```

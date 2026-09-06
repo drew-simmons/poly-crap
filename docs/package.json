@@ -1,0 +1,19 @@
+{
+  "name": "poly-crap-docs",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "blume dev",
+    "build": "blume build",
+    "preview": "blume preview",
+    "validate": "blume validate",
+    "check": "blume check"
+  },
+  "dependencies": {
+    "blume": "1.6.3"
+  }
+}

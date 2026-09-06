@@ -1,0 +1,67 @@
+---
+title: Options
+description: Every command-line flag, its default, and its key in .poly-crap.toml.
+---
+
+Every flag has a key in [`.poly-crap.toml`](/reference/configuration-file)
+unless noted. The command line wins over the file, and the file over the
+defaults, except that `exclude` and `allow` lists are joined and a boolean is
+on when either side sets it.
+
+## Scope
+
+- `--path <DIR>`, default `.`. The directory to scan and the root that
+  relative paths, globs, and auto-discovery use. Command line only.
+- `--language <NAME>`, key `languages`. Repeatable; the file takes a list.
+  Scans all six languages by default.
+- `--exclude <GLOB>`, key `exclude`. Repeatable; see
+  [Excluded paths](/scope/excludes-and-allow-lists#excluded-paths).
+- `--no-default-excludes`. Drops the built-in exclude list. Command line only;
+  the file uses `default-excludes = [...]` to replace the list instead.
+- `--allow <GLOB>`, key `allow`. Repeatable; see
+  [Allow lists](/scope/excludes-and-allow-lists#allow-lists).
+- `--diff-base <REV>`. Scores only functions changed since the merge base with
+  `REV`. Command line only.
+
+## Coverage
+
+- `--coverage <FILE>`, key `coverage`. Repeatable; reports are merged. Paths
+  in the file are relative to the working directory.
+- `--no-auto-coverage`. Skips the default-location search when no report is
+  named. Command line only.
+- `--missing <POLICY>`, key `missing`, default `pessimistic`. Also
+  `optimistic` or `skip`.
+
+## Gates
+
+- `--threshold <SCORE>`, key `threshold`, default `5`. The score a function
+  must stay at or under. Also decides which rows the table and SARIF show.
+- `--fail-above`, key `fail-above`. Exit `1` when any function is over the
+  threshold.
+- `--baseline <FILE>`. A JSON report from an earlier run to compare against.
+  Command line only.
+- `--fail-regression`, key `fail-regression`. Exit `1` when any score rose
+  from the baseline. Requires `--baseline`.
+- `--epsilon <DELTA>`, key `epsilon`, default `0.01`. A score change within
+  this much counts as unchanged.
+
+## Output
+
+- `--format <FORMAT>`, key `format`, default `human`. Also `json` or `sarif`.
+- `--output <FILE>`. Write the report to a file instead of stdout. Command
+  line only.
+- `--color <WHEN>`, default `auto`. Also `always` or `never`. Command line
+  only; see [Color](/output#color).
+- `--min <SCORE>`, key `min`. Show rows scoring at least this much. Human
+  output otherwise shows rows over the threshold; JSON shows every row.
+- `--top <N>`, key `top`. Show at most `N` rows, highest scores first.
+- `--sort <ORDER>`, key `sort`, default `crap`. Also `file`.
+- `--summary`, key `summary`. Human output without the table.
+
+`--min`, `--top`, `--sort`, and `--summary` change what is printed, never
+the gates or the summary counts.
+
+## Performance
+
+- `--jobs <N>`, key `jobs`. Threads for parsing. Defaults to the number of
+  cores.

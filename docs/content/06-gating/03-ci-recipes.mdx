@@ -1,0 +1,76 @@
+---
+title: CI recipes
+description: Gate pull requests in GitHub Actions and commits with a pre-commit hook.
+---
+
+## GitHub Actions
+
+Score the functions a pull request changed and fail the check when one is
+over the threshold. The checkout needs the full history so the merge base
+with the target branch exists; a default shallow checkout does not have it.
+
+```yaml .github/workflows/poly-crap.yml
+name: poly-crap
+
+on:
+  pull_request:
+
+jobs:
+  crap:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # Run your tests with coverage first, for example:
+      - run: go test -coverprofile=coverage.out ./...
+      - name: Install poly-crap
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/drew-simmons/poly-crap/releases/latest/download/poly-crap-installer.sh \
+            | sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Gate changed functions
+        run: poly-crap --diff-base "origin/${{ github.base_ref }}" --fail-above --color always
+```
+
+:::tip
+Actions renders colors in its logs but is not a terminal, so `--color always`
+asks for them.
+:::
+
+To show failures as code-scanning alerts on the pull request, write SARIF and
+upload it. This needs `security-events: write` in the job's permissions. Run
+from the repository root so the paths in the file are repository-relative.
+
+```yaml
+      - name: Write SARIF
+        run: poly-crap --format sarif --output poly-crap.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: poly-crap.sarif
+```
+
+Pin the installer to a release, as in [Install](/install), when you want the
+check to change only when you say so.
+
+## Pre-commit hook
+
+With [prek](https://github.com/j178/prek) or pre-commit, a local hook gates
+what you are about to commit. Poly-crap does not run tests, so it reads
+whatever report is on disk; run the tests first, or accept that the report
+may be a little behind.
+
+```yaml .pre-commit-config.yaml
+repos:
+  - repo: local
+    hooks:
+      - id: poly-crap
+        name: poly-crap
+        entry: poly-crap --diff-base main --fail-above
+        language: system
+        pass_filenames: false
+        always_run: true
+```
