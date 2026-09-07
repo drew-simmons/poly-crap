@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/drew-simmons/poly-crap/compare/v0.8.0...v0.8.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* correct the skill's curl install path ([#38](https://github.com/drew-simmons/poly-crap/issues/38)) ([6ee6961](https://github.com/drew-simmons/poly-crap/commit/6ee6961575a42735c33817e0ee3ad457219d23f3))
+
 ## [0.8.0](https://github.com/drew-simmons/poly-crap/compare/v0.7.0...v0.8.0) (2026-09-03)
 
 
