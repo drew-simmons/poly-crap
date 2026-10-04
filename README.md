@@ -113,6 +113,19 @@ The full manual is at <https://drew-simmons.github.io/poly-crap/>:
   every option, the configuration file, and exit codes.
 - [Troubleshooting](https://drew-simmons.github.io/poly-crap/troubleshooting).
 
+## Agent skill
+
+`skills/poly-crap/SKILL.md` teaches a coding agent such as Claude Code to run
+poly-crap, make a coverage report, read the results, and gate a branch.
+Install it with the [skills CLI](https://skills.sh):
+
+```sh
+npx skills add drew-simmons/poly-crap --skill poly-crap
+```
+
+Or copy the `skills/poly-crap` directory into `.claude/skills/` in a project,
+or into `~/.claude/skills/` for every project, and the agent picks it up.
+
 ## Development
 
 The project uses Rust 1.88.0. Before submitting a change, run:
@@ -126,9 +139,9 @@ cargo package --locked --allow-dirty
 
 CI also runs poly-crap on itself with a threshold of `5` and fails the build
 when a function is over it. [CLAUDE.md](CLAUDE.md) describes the architecture
-and the rules the code follows. The repository also ships a
-[Claude Code skill](.claude/skills/poly-crap/SKILL.md) that wraps the binary
-and smoke-tests a checkout.
+and the rules the code follows. Inside a checkout the
+[agent skill](skills/poly-crap/SKILL.md) also builds and smoke-tests the
+binary.
 
 The docs site lives in `docs/`. Run `pnpm --dir docs install` once, then
 `pnpm --dir docs run dev` to serve it locally.

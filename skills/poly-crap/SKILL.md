@@ -20,7 +20,8 @@ Dev mode requires a `Cargo.toml` whose package is named `poly-crap` **and** a
 `src/score.rs`. Another Rust project with a coincidental `src/score.rs` gets
 scan mode, not a wrong build.
 
-Layout follows the Agent Skills convention:
+Layout follows the Agent Skills convention, at `skills/poly-crap` in the
+poly-crap repository:
 
 ```text
 poly-crap/
@@ -31,16 +32,25 @@ poly-crap/
 
 ## Install
 
-Pick one. The script is standalone — Python 3.9+, standard library only, no
-Rust toolchain, no poly-crap source needed for scan mode. Verified running
-under macOS system Python 3.9.6 as well as 3.13.
+The script is standalone — Python 3.9+, standard library only, no Rust
+toolchain, no poly-crap source needed for scan mode. Verified running under
+macOS system Python 3.9.6 as well as 3.13.
+
+The [skills CLI](https://skills.sh) installs the skill into the agent
+directories it finds, `.claude/skills/` among them:
 
 ```sh
-# From a checkout, into your global skills directory:
-python3 .claude/skills/poly-crap/scripts/poly_crap.py self-install
+npx skills add drew-simmons/poly-crap --skill poly-crap
+```
+
+From a checkout, the script installs itself:
+
+```sh
+# Into your global skills directory:
+python3 skills/poly-crap/scripts/poly_crap.py self-install
 
 # Into one repository instead:
-python3 .claude/skills/poly-crap/scripts/poly_crap.py self-install --dest .claude/skills/poly-crap
+python3 skills/poly-crap/scripts/poly_crap.py self-install --dest .claude/skills/poly-crap
 ```
 
 `self-install` copies the whole skill directory and refuses to clobber an
@@ -51,14 +61,13 @@ installed ['SKILL.md', 'scripts'] to /Users/you/.claude/skills/poly-crap
 use it with:  python3 /Users/you/.claude/skills/poly-crap/scripts/poly_crap.py check
 ```
 
-Without a checkout, fetch the two files directly. These paths are correct for
-this repository's layout, and resolve once the skill is committed to `main` —
-the same `raw.githubusercontent.com/drew-simmons/poly-crap/main/<path>` pattern
-already serves `schemas/report-v1.json`:
+Without a checkout or Node.js, fetch the two files directly. The same
+`raw.githubusercontent.com/drew-simmons/poly-crap/main/<path>` pattern already
+serves `schemas/report-v1.json`:
 
 ```sh
 mkdir -p ~/.claude/skills/poly-crap/scripts
-base=https://raw.githubusercontent.com/drew-simmons/poly-crap/main/.claude/skills/poly-crap
+base=https://raw.githubusercontent.com/drew-simmons/poly-crap/main/skills/poly-crap
 curl -fsSL "$base/scripts/poly_crap.py" -o ~/.claude/skills/poly-crap/scripts/poly_crap.py
 curl -fsSL "$base/SKILL.md"     -o ~/.claude/skills/poly-crap/SKILL.md
 ```
@@ -70,7 +79,8 @@ does not care, but the path you type does:
 
 ```sh
 PC=~/.claude/skills/poly-crap/scripts/poly_crap.py      # global install
-PC=.claude/skills/poly-crap/scripts/poly_crap.py        # vendored in this repo
+PC=.claude/skills/poly-crap/scripts/poly_crap.py        # installed into a project
+PC=skills/poly-crap/scripts/poly_crap.py                # inside a poly-crap checkout
 ```
 
 Run commands from inside the repository you want to work on. That working
@@ -325,9 +335,10 @@ The rest come from poly-crap's docs and are printed as suggestions. Neither
   not shown` line under the table; `--min 0` lists every function, and the last
   column names the uncovered line ranges.
 - **`tests/`, `node_modules/`, and `*_test.go` are excluded by default**, along
-  with hidden directories — which is why this skill under `.claude/` never
-  shows up in its own report. `DEFAULT_EXCLUDES` lives at `src/config.rs:9`;
-  `--no-default-excludes` widens the scan.
+  with hidden directories. `skills/` is not, so `poly_crap.py` stays out of
+  this repo's own gate only because CI scans `--language rust`.
+  `DEFAULT_EXCLUDES` lives at `src/config.rs:9`; `--no-default-excludes`
+  widens the scan.
 - **Calling the library directly bypasses those defaults.** The excludes are a
   const that `main.rs` passes in, not something `analyze_tree` applies. Pass
   `&[]` in a scratch example and you will scan `node_modules/` and `target/`.

@@ -11,7 +11,7 @@ pub type CoverageMap = HashMap<PathBuf, FileCoverage>;
 
 /// Report locations coverage tools write to by default, relative to the scan
 /// root and tried in this order. The skill wrapper's `COVERAGE_CANDIDATES` in
-/// `.claude/skills/poly-crap/scripts/poly_crap.py` mirrors this list; change
+/// `skills/poly-crap/scripts/poly_crap.py` mirrors this list; change
 /// both together.
 pub const DEFAULT_REPORT_LOCATIONS: &[&str] = &[
     "coverage.lcov",
