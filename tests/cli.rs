@@ -144,6 +144,28 @@ fn coverage_scope_mismatch_warns_on_stderr() {
 }
 
 #[test]
+fn excluded_test_files_in_coverage_are_not_coverage_only() {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("a.py"), "def a():\n    return 0\n");
+    write(
+        &dir.path().join("tests").join("test_a.py"),
+        "def test_a():\n    assert True\n",
+    );
+    write(
+        &dir.path().join("coverage.lcov"),
+        "SF:a.py\nDA:1,1\nDA:2,1\nend_of_record\nSF:tests/test_a.py\nDA:1,1\nDA:2,1\nend_of_record\n",
+    );
+    poly_crap()
+        .args(["--path", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("coverage scope mismatch").not())
+        .stdout(predicate::str::contains(
+            "Coverage scope: 1 analyzed file, 2 coverage source files, 1 matched, 0 source-only, 0 coverage-only.",
+        ));
+}
+
+#[test]
 fn baseline_delta_matches_schema_and_can_fail() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("app.py");

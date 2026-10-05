@@ -23,7 +23,9 @@ source file to a report entry in three steps:
 
 A suffix shared by two report entries matches neither. Poly-crap warns on
 stderr when source files and report entries do not line up, and the
-`Coverage scope` line at the end of the report counts both sides.
+`Coverage scope` line at the end of the report counts both sides. A report
+entry for a file the excludes dropped, such as a test file the coverage tool
+instrumented, is spoken for and does not count as coverage-only.
 
 Poly-crap does not read JavaScript source maps. For TypeScript, the coverage
 tool must report the original `.ts` paths, which c8 and Vitest do by default.

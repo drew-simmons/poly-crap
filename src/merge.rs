@@ -85,11 +85,12 @@ fn merge_inner(
             .then(a.start_line.cmp(&b.start_line))
     });
 
+    let accounted = accounted_coverage(&used_coverage, &analysis.excluded_files, coverage);
     let (source_only, coverage_only) = scope_mismatches(
         has_coverage,
         &analyzed_files,
         &matched_sources,
-        &used_coverage,
+        &accounted,
         coverage,
         &entries,
         scope,
@@ -119,6 +120,23 @@ fn coverage_files(
         CoverageScope::All => coverage.len(),
         CoverageScope::Matched => used_coverage.len(),
     }
+}
+
+/// Coverage paths that are spoken for: the ones a scored file matched, plus
+/// the ones a file the excludes dropped would have matched. A report that
+/// covers the test files poly-crap skips is not a scope mismatch.
+fn accounted_coverage(
+    used_coverage: &HashSet<PathBuf>,
+    excluded_files: &[PathBuf],
+    coverage: &CoverageMap,
+) -> HashSet<PathBuf> {
+    let mut accounted = used_coverage.clone();
+    for file in excluded_files {
+        if let Some((path, _)) = lookup_coverage(file, coverage) {
+            accounted.insert(path.clone());
+        }
+    }
+    accounted
 }
 
 fn program_entry(
@@ -346,6 +364,7 @@ mod tests {
             candidate_files: 1,
             parsed_files: 1,
             diagnostics: Vec::<Diagnostic>::new(),
+            excluded_files: Vec::new(),
         }
     }
 
@@ -473,7 +492,30 @@ mod tests {
             candidate_files: analysis.candidate_files,
             parsed_files: analysis.parsed_files,
             diagnostics: analysis.diagnostics.clone(),
+            excluded_files: analysis.excluded_files.clone(),
         }
+    }
+
+    #[test]
+    fn excluded_file_coverage_is_not_coverage_only() {
+        let mut analysis = analysis();
+        analysis.excluded_files = vec![PathBuf::from("repo/tests/test_lib.rs")];
+        let coverage: CoverageMap = [
+            covered_file("repo/src/lib.rs"),
+            covered_file("repo/tests/test_lib.rs"),
+            covered_file("repo/src/gone.rs"),
+        ]
+        .into_iter()
+        .collect();
+
+        let result = merge(analysis, &coverage, MissingCoveragePolicy::Pessimistic);
+
+        assert_eq!(result.diagnostics.coverage_files, 3);
+        assert_eq!(result.diagnostics.coverage_only_count, 1);
+        assert_eq!(
+            result.diagnostics.coverage_only_examples,
+            vec![PathBuf::from("repo/src/gone.rs")]
+        );
     }
 
     #[test]
