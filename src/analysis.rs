@@ -17,6 +17,17 @@ pub struct Analysis {
     pub parsed_files: usize,
     /// One entry per file that failed to read or parse.
     pub diagnostics: Vec<Diagnostic>,
+    /// Files of an enabled language that the exclude globs dropped. The
+    /// coverage scope accounts for them: a report that covers a test file
+    /// the excludes skipped is not a mismatch.
+    pub excluded_files: Vec<std::path::PathBuf>,
+}
+
+/// What a walk of the tree found: the files to analyze, and the ones the
+/// exclude globs dropped.
+struct Discovered {
+    analyze: Vec<(std::path::PathBuf, Language)>,
+    excluded: Vec<std::path::PathBuf>,
 }
 
 struct FileAnalysis {
@@ -38,8 +49,8 @@ pub fn analyze_tree(root: &Path, languages: &[Language], excludes: &[String]) ->
     validate_root(root)?;
     let exclude_set = build_globs(excludes)?;
     let enabled: HashSet<_> = languages.iter().copied().collect();
-    let paths = discover_paths(root, &enabled, &exclude_set);
-    analyze_discovered(paths)
+    let found = discover_paths(root, &enabled, &exclude_set);
+    analyze_discovered(found.analyze, found.excluded)
 }
 
 /// [`analyze_tree`] limited to the `selected` paths, given relative to `root`.
@@ -54,23 +65,29 @@ pub fn analyze_paths(
     let exclude_set = build_globs(excludes)?;
     let enabled: HashSet<_> = languages.iter().copied().collect();
     let selected: HashSet<_> = selected.iter().cloned().collect();
-    let paths = discover_paths(root, &enabled, &exclude_set)
+    let found = discover_paths(root, &enabled, &exclude_set);
+    let paths = found
+        .analyze
         .into_iter()
         .filter(|(path, _)| {
             let relative = path.strip_prefix(root).unwrap_or(path);
             selected.contains(relative)
         })
         .collect();
-    analyze_discovered(paths)
+    analyze_discovered(paths, found.excluded)
 }
 
-fn analyze_discovered(paths: Vec<(std::path::PathBuf, Language)>) -> Result<Analysis> {
+fn analyze_discovered(
+    paths: Vec<(std::path::PathBuf, Language)>,
+    excluded: Vec<std::path::PathBuf>,
+) -> Result<Analysis> {
     let results: Vec<_> = paths
         .par_iter()
         .map(|(path, language)| analyze_file(path, *language))
         .collect();
     let mut analysis = Analysis {
         candidate_files: paths.len(),
+        excluded_files: excluded,
         ..Analysis::default()
     };
     for result in results {
@@ -93,11 +110,21 @@ fn validate_root(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn discover_paths(
-    root: &Path,
-    enabled: &HashSet<Language>,
-    exclude_set: &GlobSet,
-) -> Vec<(std::path::PathBuf, Language)> {
+/// Every file of an enabled language under `root`, split by the exclude
+/// globs, which match paths relative to `root`.
+fn discover_paths(root: &Path, enabled: &HashSet<Language>, exclude_set: &GlobSet) -> Discovered {
+    let (analyze, excluded): (Vec<_>, Vec<_>) = enabled_files(root, enabled)
+        .into_iter()
+        .partition(|(path, _)| !exclude_set.is_match(path.strip_prefix(root).unwrap_or(path)));
+    Discovered {
+        analyze,
+        excluded: excluded.into_iter().map(|(path, _)| path).collect(),
+    }
+}
+
+/// Every file of an enabled language under `root`, `.gitignore` and hidden
+/// directories honored.
+fn enabled_files(root: &Path, enabled: &HashSet<Language>) -> Vec<(std::path::PathBuf, Language)> {
     ignore::WalkBuilder::new(root)
         .standard_filters(true)
         .build()
@@ -106,11 +133,7 @@ fn discover_paths(
         .filter_map(|entry| {
             let path = entry.into_path();
             let language = Language::from_path(&path)?;
-            if !enabled.contains(&language) {
-                return None;
-            }
-            let relative = path.strip_prefix(root).unwrap_or(&path);
-            (!exclude_set.is_match(relative)).then_some((path, language))
+            enabled.contains(&language).then_some((path, language))
         })
         .collect()
 }
