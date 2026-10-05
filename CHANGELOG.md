@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/drew-simmons/poly-crap/compare/v0.8.1...v0.8.2) (2026-10-05)
+
+
+### Bug Fixes
+
+* coverage for excluded files is not a scope mismatch ([#51](https://github.com/drew-simmons/poly-crap/issues/51)) ([cb72544](https://github.com/drew-simmons/poly-crap/commit/cb72544e2082fd3d8889c3d911a6b0c80802baca))
+
 ## [0.8.1](https://github.com/drew-simmons/poly-crap/compare/v0.8.0...v0.8.1) (2026-09-06)
 
 
